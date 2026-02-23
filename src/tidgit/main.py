@@ -5,7 +5,7 @@ tidgit: a minimal git TUI focused on core actions and visual clarity.
 Keybindings:
   Up/Down or j/k   Move selection
   Left/Right       Move focus between changes and preview panes
-  Enter            Toggle preview mode (unstaged/staged) when both exist
+  Enter            Focus preview pane for selected file
   s                Stage selected file
   u                Unstage selected file
   c                Commit (prompt for message)
@@ -40,6 +40,12 @@ class FileEntry:
     unstaged: bool
     untracked: bool
     conflict: bool
+
+
+@dataclass
+class DisplayRow:
+    section: str
+    entry: FileEntry
 
 
 def run_cmd(args: Sequence[str]) -> Tuple[int, str, str]:
@@ -185,7 +191,8 @@ class TidGitApp:
             return
 
         self.repo_error = None
-        old_path = self.entries[self.selected].path if (keep_selection and self.entries and self.selected < len(self.entries)) else None
+        old_row = self.current_row() if keep_selection else None
+        old_key = (old_row.section, old_row.entry.path) if old_row else None
         branch, entries, err = parse_status_porcelain()
         if err:
             self.branch = ""
@@ -203,23 +210,47 @@ class TidGitApp:
         self.ahead_count, self.behind_count = parse_ahead_behind(branch)
         self.entries = entries
 
-        if old_path:
-            idx = next((i for i, e in enumerate(entries) if e.path == old_path), 0)
+        display_rows = self.display_rows()
+        if old_key:
+            idx = next((i for i, row in enumerate(display_rows) if (row.section, row.entry.path) == old_key), 0)
             self.selected = idx
         else:
-            self.selected = min(self.selected, max(len(entries) - 1, 0))
+            self.selected = min(self.selected, max(len(display_rows) - 1, 0))
 
         self.preview_scroll = 0
         self.clear_preview_cache()
 
-    def current_entry(self) -> Optional[FileEntry]:
-        if not self.entries:
+    def display_rows(self) -> List[DisplayRow]:
+        changes = [entry for entry in self.entries if entry.unstaged or entry.untracked or entry.conflict]
+        staged = [entry for entry in self.entries if entry.staged]
+        changes.sort(key=lambda entry: entry.path.lower())
+        staged.sort(key=lambda entry: entry.path.lower())
+
+        rows = [DisplayRow(section="changes", entry=entry) for entry in changes]
+        rows.extend(DisplayRow(section="staged", entry=entry) for entry in staged)
+        return rows
+
+    def current_row(self) -> Optional[DisplayRow]:
+        rows = self.display_rows()
+        if not rows:
             return None
         if self.selected < 0:
             self.selected = 0
-        if self.selected >= len(self.entries):
-            self.selected = len(self.entries) - 1
-        return self.entries[self.selected]
+        if self.selected >= len(rows):
+            self.selected = len(rows) - 1
+        return rows[self.selected]
+
+    def current_entry(self) -> Optional[FileEntry]:
+        row = self.current_row()
+        if not row:
+            return None
+        return row.entry
+
+    def current_section(self) -> str:
+        row = self.current_row()
+        if not row:
+            return "changes"
+        return row.section
 
     def has_staged_changes(self) -> bool:
         return any(entry.staged for entry in self.entries)
@@ -387,16 +418,19 @@ class TidGitApp:
                 buf.append(ch)
 
     def move_selection(self, delta: int) -> None:
-        if not self.entries:
+        rows = self.display_rows()
+        if not rows:
             return
-        self.selected = max(0, min(len(self.entries) - 1, self.selected + delta))
+        self.selected = max(0, min(len(rows) - 1, self.selected + delta))
         self.preview_scroll = 0
 
-    def adjust_list_scroll(self, panel_height: int) -> None:
-        if self.selected < self.list_scroll:
-            self.list_scroll = self.selected
-        elif self.selected >= self.list_scroll + panel_height:
-            self.list_scroll = self.selected - panel_height + 1
+    def adjust_list_scroll(self, selected_line: int, total_lines: int, panel_height: int) -> None:
+        max_scroll = max(0, total_lines - panel_height)
+        if selected_line < self.list_scroll:
+            self.list_scroll = selected_line
+        elif selected_line >= self.list_scroll + panel_height:
+            self.list_scroll = selected_line - panel_height + 1
+        self.list_scroll = max(0, min(self.list_scroll, max_scroll))
 
     def adjust_preview_scroll(self, delta: int) -> None:
         entry = self.current_entry()
@@ -463,7 +497,7 @@ class TidGitApp:
         return f"{e.path} {suffix}".strip()
 
     def draw_left_panel(self, top: int, left_w: int, body_h: int) -> None:
-        title = " [ CHANGES ] " if self.active_pane == "changes" else "   changes   "
+        title = " [ FILES ] " if self.active_pane == "changes" else "   files   "
         self.stdscr.attron(self.pane_header_attr("changes"))
         self.stdscr.addstr(top, 0, safe_truncate(title + "-" * max(0, left_w - len(title)), left_w))
         self.stdscr.attroff(self.pane_header_attr("changes"))
@@ -472,29 +506,91 @@ class TidGitApp:
             self.stdscr.addstr(top + 1, 0, safe_truncate(self.repo_error, left_w - 1))
             return
 
-        if not self.entries:
+        rows = self.display_rows()
+        if not rows:
             self.stdscr.addstr(top + 1, 0, safe_truncate("Working tree clean.", left_w - 1))
             return
 
+        changes = [row for row in rows if row.section == "changes"]
+        staged = [row for row in rows if row.section == "staged"]
+        list_items: List[Tuple[str, Optional[str], Optional[DisplayRow], str]] = []
+
+        list_items.append(("header", "changes", None, "[ CHANGES ]"))
+        if changes:
+            for row in changes:
+                list_items.append(("entry", "changes", row, self.format_entry(row.entry)))
+        else:
+            list_items.append(("empty", "changes", None, "(no unstaged changes)"))
+
+        list_items.append(("header", "staged", None, "[ STAGED ]"))
+        if staged:
+            for row in staged:
+                list_items.append(("entry", "staged", row, self.format_entry(row.entry)))
+        else:
+            list_items.append(("empty", "staged", None, "(no staged changes)"))
+
+        entry_line_positions: List[int] = []
+        entry_rows: List[DisplayRow] = []
+        for line_idx, item in enumerate(list_items):
+            kind, _section, item_row, _text = item
+            if kind == "entry" and item_row is not None:
+                entry_line_positions.append(line_idx)
+                entry_rows.append(item_row)
+
+        if entry_rows:
+            self.selected = max(0, min(len(entry_rows) - 1, self.selected))
+            selected_row = entry_rows[self.selected]
+            selected_line = entry_line_positions[self.selected]
+        else:
+            selected_row = None
+            selected_line = 0
+            self.selected = 0
+
         list_top = top + 1
         list_h = max(1, body_h - 1)
-        self.adjust_list_scroll(list_h)
-        visible = self.entries[self.list_scroll : self.list_scroll + list_h]
-        for i, entry in enumerate(visible):
-            row = list_top + i
-            idx = self.list_scroll + i
-            line = safe_truncate(self.format_entry(entry), left_w - 1)
-            if idx == self.selected:
+        self.adjust_list_scroll(selected_line, len(list_items), list_h)
+        visible = list_items[self.list_scroll : self.list_scroll + list_h]
+
+        for i, item in enumerate(visible):
+            row_num = list_top + i
+            kind, section, list_row, text = item
+            line = safe_truncate(text, left_w - 1)
+
+            if kind == "header":
+                if self.active_pane == "changes":
+                    if selected_row and selected_row.section == section:
+                        header_attr = safe_color_pair(5) | curses.A_BOLD
+                    else:
+                        header_attr = safe_color_pair(6)
+                else:
+                    header_attr = safe_color_pair(6) | curses.A_DIM
+                self.stdscr.attron(header_attr)
+                self.stdscr.addstr(row_num, 0, " " * max(0, left_w - 1))
+                self.stdscr.addstr(row_num, 0, line)
+                self.stdscr.attroff(header_attr)
+                continue
+
+            if kind == "empty":
+                self.stdscr.attron(curses.A_DIM)
+                self.stdscr.addstr(row_num, 0, line)
+                self.stdscr.attroff(curses.A_DIM)
+                continue
+
+            if list_row is not None and selected_row is not None and list_row == selected_row:
                 if self.active_pane == "changes":
                     selected_attr = safe_color_pair(1) | curses.A_BOLD
                 else:
                     selected_attr = safe_color_pair(7) | curses.A_DIM
                 self.stdscr.attron(selected_attr)
-                self.stdscr.addstr(row, 0, " " * max(0, left_w - 1))
-                self.stdscr.addstr(row, 0, line)
+                self.stdscr.addstr(row_num, 0, " " * max(0, left_w - 1))
+                self.stdscr.addstr(row_num, 0, line)
                 self.stdscr.attroff(selected_attr)
             else:
-                self.stdscr.addstr(row, 0, line)
+                if self.active_pane != "changes":
+                    self.stdscr.attron(curses.A_DIM)
+                self.stdscr.addstr(row_num, 0, line)
+                if self.active_pane != "changes":
+                    self.stdscr.attroff(curses.A_DIM)
 
     def draw_right_panel(self, top: int, left_w: int, w: int, body_h: int) -> None:
         x0 = left_w + 1
@@ -553,7 +649,14 @@ class TidGitApp:
         self.stdscr.addstr(row, 0, " " * max(0, w - 1))
         focus_chip = f" [{self.active_pane.upper()}] "
         primary = "[C push]" if self.primary_action_name() == "push" else "[C commit]"
-        rest = f" [<- changes] [-> preview] [S stage] [U unstage] {primary} · j/k move/scroll · Enter toggle · p pull · P push · q quit "
+        if self.current_section() == "staged":
+            actions = f" [U unstage] {primary}"
+        else:
+            actions = f" [S stage] [U unstage] {primary}"
+        rest = (
+            f" [<- changes] [-> preview]{actions}"
+            " · j/k move/scroll · Enter preview · p pull · P push · q quit "
+        )
         chip = safe_truncate(focus_chip, w - 1)
         self.stdscr.attron(self.focus_chip_attr())
         self.stdscr.addstr(row, 0, chip)
@@ -688,7 +791,8 @@ class TidGitApp:
                 self.adjust_preview_scroll(-10)
                 continue
             if ch in ("\n", "\r"):
-                self.toggle_preview_mode()
+                self.active_pane = "preview"
+                self.set_status("Focus: preview")
                 continue
             if ch == "r":
                 self.refresh_data()
@@ -704,7 +808,7 @@ class TidGitApp:
                 continue
             if self.repo_error:
                 continue
-            if ch == "s":
+            if ch in ("s", " "):
                 self.stage_selected()
                 continue
             if ch == "u":
