@@ -179,3 +179,8 @@ def test_is_enter_key_handles_common_variants() -> None:
     assert tm.is_enter_key(10) is True
     assert tm.is_enter_key(13) is True
     assert tm.is_enter_key("x") is False
+
+
+def test_is_enter_key_uses_keyname_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(curses, "keyname", lambda _code: b"KEY_ENTER")
+    assert tm.is_enter_key(777) is True

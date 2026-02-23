@@ -149,6 +149,25 @@ def test_stage_selected_calls_git_action(monkeypatch: pytest.MonkeyPatch) -> Non
     assert observed == [(["add", "--", "a.txt"], "Staged a.txt", "Stage failed")]
 
 
+def test_run_git_action_shows_running_status_before_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = tm.TidGitApp(DummyWindow())
+    app.repo_error = None
+
+    seen: list[str] = []
+
+    def fake_draw() -> None:
+        seen.append(app.status_text)
+
+    monkeypatch.setattr(app, "draw", fake_draw)
+    monkeypatch.setattr(tm, "run_cmd", lambda _args: (0, "", ""))
+    monkeypatch.setattr(app, "refresh_data", lambda keep_selection=True: None)
+
+    app.run_git_action(["status"], "ok", "err")
+
+    assert seen
+    assert seen[0] == "Running: git status"
+
+
 def test_unstage_selected_uses_restore_then_reset_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     app = tm.TidGitApp(DummyWindow())
     app.entries = [make_entry("a.txt", staged=True, x="M")]
@@ -276,3 +295,11 @@ def test_hard_refresh_resets_ui_state(monkeypatch: pytest.MonkeyPatch) -> None:
     assert app.modal_lines == []
     assert app.modal_scroll == 0
     assert app.status_text == "Hard refreshed"
+
+
+def test_set_status_flattens_multiline_text() -> None:
+    app = tm.TidGitApp(DummyWindow())
+    app.set_status("[master abc] msg\n 1 file changed, 2 insertions(+)\n")
+
+    assert "\n" not in app.status_text
+    assert app.status_text == "[master abc] msg 1 file changed, 2 insertions(+)"

@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 APP_NAME = "tidgit"
 APP_VERSION = "0.1.0"
-DEFAULT_CMD_TIMEOUT_SECONDS = 45
+DEFAULT_CMD_TIMEOUT_SECONDS = 20
 
 
 @dataclass
@@ -173,7 +173,18 @@ def safe_color_pair(pair_id: int) -> int:
 def is_enter_key(ch: object) -> bool:
     # Different terminals/curses builds can emit Enter as "\n", "\r",
     # KEY_ENTER, or raw integer codes.
-    return ch in ("\n", "\r", curses.KEY_ENTER, 10, 13)
+    if ch in ("\n", "\r", curses.KEY_ENTER, 10, 13):
+        return True
+    if isinstance(ch, int):
+        try:
+            key_name = curses.keyname(ch)
+            key_name_text = key_name.decode("ascii", "ignore")
+            return key_name_text in ("^J", "^M", "KEY_ENTER", "ENTER")
+        except curses.error:
+            return False
+        except Exception:
+            return False
+    return False
 
 
 class TidGitApp:
@@ -199,7 +210,8 @@ class TidGitApp:
         self.repo_error: Optional[str] = None
 
     def set_status(self, text: str, error: bool = False) -> None:
-        self.status_text = text
+        cleaned = re.sub(r"\s+", " ", text.replace("\r", "\n")).strip()
+        self.status_text = cleaned
         self.status_is_error = error
 
     def clear_preview_cache(self) -> None:
@@ -394,6 +406,11 @@ class TidGitApp:
         return lines
 
     def run_git_action(self, args: Sequence[str], ok_text: str, err_prefix: str) -> bool:
+        self.set_status(f"Running: git {' '.join(args)}")
+        try:
+            self.draw()
+        except curses.error:
+            pass
         code, out, err = run_cmd(["git", *args])
         if code == 0:
             msg = out.strip() or ok_text
