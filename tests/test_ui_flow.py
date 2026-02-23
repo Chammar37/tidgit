@@ -170,3 +170,12 @@ def test_modal_has_explicit_modal_text() -> None:
     rendered = "\n".join(window.writes)
     assert "Recent Commits [MODAL]" in rendered
     assert "modal focus locked" in rendered
+
+
+def test_is_enter_key_handles_common_variants() -> None:
+    assert tm.is_enter_key("\n") is True
+    assert tm.is_enter_key("\r") is True
+    assert tm.is_enter_key(curses.KEY_ENTER) is True
+    assert tm.is_enter_key(10) is True
+    assert tm.is_enter_key(13) is True
+    assert tm.is_enter_key("x") is False

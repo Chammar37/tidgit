@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 APP_NAME = "tidgit"
 APP_VERSION = "0.1.0"
+DEFAULT_CMD_TIMEOUT_SECONDS = 45
 
 
 @dataclass
@@ -49,15 +50,34 @@ class DisplayRow:
 
 
 def run_cmd(args: Sequence[str]) -> Tuple[int, str, str]:
-    proc = subprocess.run(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    return proc.returncode, proc.stdout, proc.stderr
+    try:
+        timeout_seconds = max(5, int(os.environ.get("TIDGIT_CMD_TIMEOUT_SECONDS", str(DEFAULT_CMD_TIMEOUT_SECONDS))))
+    except ValueError:
+        timeout_seconds = DEFAULT_CMD_TIMEOUT_SECONDS
+
+    env = os.environ.copy()
+    # Avoid hidden credential/GPG prompts freezing the curses UI.
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    env.setdefault("GCM_INTERACTIVE", "Never")
+    try:
+        proc = subprocess.run(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            env=env,
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired as exc:
+        out = exc.output if isinstance(exc.output, str) else ""
+        err = exc.stderr if isinstance(exc.stderr, str) else ""
+        timeout_msg = f"Command timed out after {timeout_seconds}s: {' '.join(args)}"
+        details = "\n".join(part for part in (timeout_msg, err.strip()) if part)
+        return 124, out, details
 
 
 def is_git_repo() -> bool:
@@ -148,6 +168,12 @@ def safe_color_pair(pair_id: int) -> int:
         return curses.color_pair(pair_id)
     except Exception:
         return 0
+
+
+def is_enter_key(ch: object) -> bool:
+    # Different terminals/curses builds can emit Enter as "\n", "\r",
+    # KEY_ENTER, or raw integer codes.
+    return ch in ("\n", "\r", curses.KEY_ENTER, 10, 13)
 
 
 class TidGitApp:
@@ -470,7 +496,7 @@ class TidGitApp:
             except curses.error:
                 continue
 
-            if ch in ("\n", "\r", curses.KEY_ENTER):
+            if is_enter_key(ch):
                 try_set_cursor(0)
                 return "".join(buf)
             if ch == "\x1b":
@@ -535,7 +561,7 @@ class TidGitApp:
     def draw_header(self, w: int) -> None:
         title = f" {APP_NAME} "
         focus = f" focus:{self.active_pane} "
-        right = focus + " q quit · r refresh · l log "
+        right = focus + " q quit · r hard-refresh · l log "
         left_part = title + ("| " + self.branch if self.branch else "| no branch")
         content = safe_truncate(left_part, max(1, w - len(right) - 1))
         line = content + right
@@ -849,7 +875,7 @@ class TidGitApp:
         self.stdscr.refresh()
 
     def handle_modal_input(self, ch: object) -> None:
-        if ch in ("q", "\x1b", "l", "\n", "\r", curses.KEY_ENTER):
+        if ch in ("q", "\x1b", "l") or is_enter_key(ch):
             self.close_modal()
             return
         if ch in ("j", curses.KEY_DOWN):
@@ -925,7 +951,7 @@ class TidGitApp:
             if ch in (curses.KEY_PPAGE, "b"):
                 self.adjust_preview_scroll(-10)
                 continue
-            if ch in ("\n", "\r", curses.KEY_ENTER):
+            if is_enter_key(ch):
                 self.active_pane = "preview"
                 self.set_status("Focus: preview")
                 continue

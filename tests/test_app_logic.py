@@ -189,6 +189,17 @@ def test_input_prompt_accepts_key_enter(monkeypatch: pytest.MonkeyPatch) -> None
     assert app.input_prompt("Commit message") == "ok"
 
 
+def test_input_prompt_accepts_int_newline_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    for enter_code in (10, 13):
+        window = DummyWindow(inputs=["o", "k", enter_code])
+        app = tm.TidGitApp(window)
+
+        monkeypatch.setattr(app, "draw", lambda: None)
+        monkeypatch.setattr(tm, "try_set_cursor", lambda _visibility: None)
+
+        assert app.input_prompt("Commit message") == "ok"
+
+
 def test_input_prompt_ctrl_r_triggers_hard_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     window = DummyWindow(inputs=["\x12", "\n"])
     app = tm.TidGitApp(window)

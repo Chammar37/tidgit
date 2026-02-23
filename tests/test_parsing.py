@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Sequence
 
 import pytest
@@ -81,3 +82,51 @@ def test_parse_ahead_behind(branch: str, expected: tuple[int, int]) -> None:
 )
 def test_safe_truncate(text: str, width: int, expected: str) -> None:
     assert tm.safe_truncate(text, width) == expected
+
+
+def test_run_cmd_uses_non_interactive_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Proc:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(*args: object, **kwargs: object) -> Proc:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return Proc()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    code, out, err = tm.run_cmd(["git", "status"])
+
+    assert code == 0
+    assert out == "ok"
+    assert err == ""
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["timeout"] == tm.DEFAULT_CMD_TIMEOUT_SECONDS
+    assert isinstance(kwargs["env"], dict)
+    assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert kwargs["env"]["GCM_INTERACTIVE"] == "Never"
+
+
+def test_run_cmd_returns_timeout_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(*_args: object, **_kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(
+            cmd=["git", "status"],
+            timeout=tm.DEFAULT_CMD_TIMEOUT_SECONDS,
+            output="",
+            stderr="timed hook",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    code, out, err = tm.run_cmd(["git", "status"])
+
+    assert code == 124
+    assert out == ""
+    assert "Command timed out" in err
+    assert "timed hook" in err
