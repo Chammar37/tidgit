@@ -38,9 +38,16 @@ def test_primary_action_name_prefers_commit_when_staged() -> None:
 
 def test_primary_action_name_push_when_ahead_and_no_staged() -> None:
     app = tm.TidGitApp(DummyWindow())
-    app.entries = [make_entry("a.txt", unstaged=True, y="M")]
+    app.entries = []
     app.ahead_count = 2
     assert app.primary_action_name() == "push"
+
+
+def test_primary_action_name_prefers_commit_when_working_tree_dirty_even_if_ahead() -> None:
+    app = tm.TidGitApp(DummyWindow())
+    app.entries = [make_entry("a.txt", unstaged=True, y="M")]
+    app.ahead_count = 2
+    assert app.primary_action_name() == "commit"
 
 
 def test_run_primary_action_commit_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,15 +75,30 @@ def test_run_primary_action_push_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called == ["push"]
 
 
-def test_run_primary_action_errors_without_staged_or_ahead() -> None:
+def test_run_primary_action_uses_commit_all_for_unstaged_changes(monkeypatch: pytest.MonkeyPatch) -> None:
     app = tm.TidGitApp(DummyWindow())
     app.entries = [make_entry("a.txt", unstaged=True, y="M")]
+    app.ahead_count = 0
+
+    called: list[str] = []
+    monkeypatch.setattr(app, "commit_prompt", lambda: called.append("commit"))
+    monkeypatch.setattr(app, "commit_all_prompt", lambda: called.append("commit_all"))
+    monkeypatch.setattr(app, "push", lambda: called.append("push"))
+
+    app.run_primary_action()
+
+    assert called == ["commit_all"]
+
+
+def test_run_primary_action_errors_without_changes_or_ahead() -> None:
+    app = tm.TidGitApp(DummyWindow())
+    app.entries = []
     app.ahead_count = 0
 
     app.run_primary_action()
 
     assert app.status_is_error is True
-    assert app.status_text == "No staged changes to commit."
+    assert app.status_text == "No changes to commit."
 
 
 def test_toggle_preview_mode_switches_when_both_staged_and_unstaged() -> None:
@@ -173,3 +195,19 @@ def test_commit_prompt_empty_message(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert app.status_is_error is True
     assert app.status_text == "Commit message cannot be empty."
+
+
+def test_commit_all_prompt_stages_then_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = tm.TidGitApp(DummyWindow())
+    monkeypatch.setattr(app, "input_prompt", lambda _title: "message")
+
+    observed: list[list[str]] = []
+
+    def fake_run_git_action(args: Sequence[str], _ok_text: str, _err_prefix: str) -> bool:
+        observed.append(list(args))
+        return True
+
+    monkeypatch.setattr(app, "run_git_action", fake_run_git_action)
+    app.commit_all_prompt()
+
+    assert observed == [["add", "-A"], ["commit", "-m", "message"]]

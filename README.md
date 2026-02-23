@@ -4,6 +4,7 @@
 
 ## Git Functions
 
+- Separate left-pane sections for `CHANGES` and `STAGED`
 - View branch/status and changed files
 - Preview diffs for staged, unstaged, and untracked files
 - Stage selected file (`git add -- <file>`)
@@ -32,7 +33,7 @@ Optional:
 - `j` / `k` or `Up` / `Down`: move selection
 - `Right Arrow`: focus preview pane
 - `Left Arrow`: focus changes pane
-- `Enter`: toggle preview mode when a file has both staged and unstaged changes
+- `Enter`: focus preview pane for the selected file
 - `s`: stage selected file
 - `u`: unstage selected file
 - `c`: primary action button (commit when staged changes exist, push when branch is ahead)
@@ -42,6 +43,8 @@ Optional:
 - `r`: refresh
 - `n` / `b`: scroll preview down/up
 - `q`: quit
+
+When a staged file is highlighted, the bottom action menu switches to staged-focused actions (for example `U unstage` and commit/push).
 
 ## Production Validation
 

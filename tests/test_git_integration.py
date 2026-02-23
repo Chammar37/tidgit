@@ -73,6 +73,65 @@ def test_stage_unstage_and_commit_flow(tmp_path: Path, monkeypatch: pytest.Monke
     assert git(repo, "rev-list", "--count", "HEAD") == "2"
 
 
+def test_selection_follows_file_when_staging_and_unstaging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    first = repo / "a.txt"
+    second = repo / "b.txt"
+    first.write_text("a1\n", encoding="utf-8")
+    second.write_text("b1\n", encoding="utf-8")
+    git(repo, "add", "a.txt", "b.txt")
+    git(repo, "commit", "-m", "initial")
+
+    first.write_text("a1\na2\n", encoding="utf-8")
+    second.write_text("b1\nb2\n", encoding="utf-8")
+
+    monkeypatch.chdir(repo)
+    app = tm.TidGitApp(DummyWindow())
+    app.refresh_data()
+
+    rows = app.display_rows()
+    app.selected = next(i for i, row in enumerate(rows) if row.section == "changes" and row.entry.path == "b.txt")
+
+    app.stage_selected()
+    row = app.current_row()
+    assert row is not None
+    assert row.section == "staged"
+    assert row.entry.path == "b.txt"
+
+    app.unstage_selected()
+    row = app.current_row()
+    assert row is not None
+    assert row.section == "changes"
+    assert row.entry.path == "b.txt"
+
+
+def test_primary_commit_stages_and_commits_working_tree_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    tracked = repo / "tracked.txt"
+    tracked.write_text("line1\n", encoding="utf-8")
+    git(repo, "add", "tracked.txt")
+    git(repo, "commit", "-m", "initial")
+
+    tracked.write_text("line1\nline2\n", encoding="utf-8")
+
+    monkeypatch.chdir(repo)
+    app = tm.TidGitApp(DummyWindow())
+    app.refresh_data()
+    monkeypatch.setattr(app, "input_prompt", lambda _title: "second")
+
+    app.run_primary_action()
+    app.refresh_data()
+
+    assert app.entries == []
+    assert git(repo, "rev-list", "--count", "HEAD") == "2"
+
+
 def test_ahead_count_drives_push_primary_action(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     remote = tmp_path / "remote.git"
     work = tmp_path / "work"

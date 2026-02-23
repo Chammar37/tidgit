@@ -95,3 +95,61 @@ def test_run_loop_focus_switch_and_stage(monkeypatch: pytest.MonkeyPatch) -> Non
     assert app.run() == 0
     assert calls == ["stage"]
     assert app.status_text == "Focus: changes"
+
+
+def test_left_panel_splits_and_scrolls_both_sections(monkeypatch: pytest.MonkeyPatch) -> None:
+    window = DummyWindow(height=22, width=120)
+    app = tm.TidGitApp(window)
+    app.repo_error = None
+    app.entries = [
+        tm.FileEntry(
+            path=f"c{i:02d}.txt",
+            x=" ",
+            y="M",
+            staged=False,
+            unstaged=True,
+            untracked=False,
+            conflict=False,
+        )
+        for i in range(12)
+    ] + [
+        tm.FileEntry(
+            path=f"s{i:02d}.txt",
+            x="M",
+            y=" ",
+            staged=True,
+            unstaged=False,
+            untracked=False,
+            conflict=False,
+        )
+        for i in range(12)
+    ]
+
+    monkeypatch.setattr(app, "diff_lines_for_entry", lambda _entry: ["+line"])
+
+    app.selected = len([e for e in app.entries if e.unstaged]) + 9
+    app.draw()
+    assert app.staged_scroll > 0
+    rendered = "\n".join(window.writes)
+    assert "CHANGES" in rendered
+    assert "STAGED" in rendered
+
+    window.writes.clear()
+    app.selected = 9
+    app.draw()
+    assert app.changes_scroll > 0
+
+
+def test_modal_has_explicit_modal_text() -> None:
+    window = DummyWindow(height=30, width=120)
+    app = tm.TidGitApp(window)
+    app.repo_error = None
+    app.entries = []
+    app.modal_title = " Recent Commits [MODAL] "
+    app.modal_lines = ["abc123 Initial commit"]
+
+    app.draw()
+
+    rendered = "\n".join(window.writes)
+    assert "Recent Commits [MODAL]" in rendered
+    assert "modal focus locked" in rendered
