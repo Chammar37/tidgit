@@ -97,6 +97,23 @@ def test_run_loop_focus_switch_and_stage(monkeypatch: pytest.MonkeyPatch) -> Non
     assert app.status_text == "Focus: changes"
 
 
+def test_run_loop_uses_hard_refresh_for_r(monkeypatch: pytest.MonkeyPatch) -> None:
+    window = DummyWindow(inputs=["r", "q"])
+    app = tm.TidGitApp(window)
+
+    monkeypatch.setattr(curses, "start_color", lambda: None)
+    monkeypatch.setattr(curses, "use_default_colors", lambda: None)
+    monkeypatch.setattr(curses, "init_pair", lambda _pid, _fg, _bg: None)
+    monkeypatch.setattr(tm, "try_set_cursor", lambda _visibility: None)
+    monkeypatch.setattr(app, "refresh_data", lambda keep_selection=False: setattr(app, "repo_error", None))
+
+    calls: list[str] = []
+    monkeypatch.setattr(app, "hard_refresh", lambda: calls.append("hard_refresh"))
+
+    assert app.run() == 0
+    assert calls == ["hard_refresh"]
+
+
 def test_left_panel_splits_and_scrolls_both_sections(monkeypatch: pytest.MonkeyPatch) -> None:
     window = DummyWindow(height=22, width=120)
     app = tm.TidGitApp(window)

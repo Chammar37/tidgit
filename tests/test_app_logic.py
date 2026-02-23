@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import curses
 from collections.abc import Sequence
 
 import pytest
@@ -178,6 +179,29 @@ def test_input_prompt_handles_backspace_and_submit(monkeypatch: pytest.MonkeyPat
     assert app.input_prompt("Commit message") == "ho"
 
 
+def test_input_prompt_accepts_key_enter(monkeypatch: pytest.MonkeyPatch) -> None:
+    window = DummyWindow(inputs=["o", "k", curses.KEY_ENTER])
+    app = tm.TidGitApp(window)
+
+    monkeypatch.setattr(app, "draw", lambda: None)
+    monkeypatch.setattr(tm, "try_set_cursor", lambda _visibility: None)
+
+    assert app.input_prompt("Commit message") == "ok"
+
+
+def test_input_prompt_ctrl_r_triggers_hard_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    window = DummyWindow(inputs=["\x12", "\n"])
+    app = tm.TidGitApp(window)
+
+    calls: list[str] = []
+    monkeypatch.setattr(app, "draw", lambda: None)
+    monkeypatch.setattr(app, "hard_refresh", lambda: calls.append("hard_refresh"))
+    monkeypatch.setattr(tm, "try_set_cursor", lambda _visibility: None)
+
+    assert app.input_prompt("Commit message") == ""
+    assert calls == ["hard_refresh"]
+
+
 def test_commit_prompt_cancel(monkeypatch: pytest.MonkeyPatch) -> None:
     app = tm.TidGitApp(DummyWindow())
     monkeypatch.setattr(app, "input_prompt", lambda _title: None)
@@ -211,3 +235,33 @@ def test_commit_all_prompt_stages_then_commits(monkeypatch: pytest.MonkeyPatch) 
     app.commit_all_prompt()
 
     assert observed == [["add", "-A"], ["commit", "-m", "message"]]
+
+
+def test_hard_refresh_resets_ui_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = tm.TidGitApp(DummyWindow())
+    monkeypatch.setattr(app, "pending_focus", ("staged", "a.txt"))
+    app.preview_scroll = 5
+    app.changes_scroll = 4
+    app.staged_scroll = 3
+    app.modal_title = "Modal"
+    app.modal_lines = ["line"]
+    app.modal_scroll = 2
+    app.preview_mode = {"a.txt": "staged"}
+    app.repo_error = None
+
+    calls: list[str] = []
+    monkeypatch.setattr(tm, "is_git_repo", lambda: False)
+    monkeypatch.setattr(app, "refresh_data", lambda: calls.append("refresh"))
+
+    app.hard_refresh()
+
+    assert calls == ["refresh"]
+    assert app.pending_focus is None
+    assert app.preview_scroll == 0
+    assert app.changes_scroll == 0
+    assert app.staged_scroll == 0
+    assert app.preview_mode == {}
+    assert app.modal_title == ""
+    assert app.modal_lines == []
+    assert app.modal_scroll == 0
+    assert app.status_text == "Hard refreshed"

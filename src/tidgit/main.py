@@ -12,7 +12,7 @@ Keybindings:
   p                Pull --rebase
   P                Push
   l                Show recent log
-  r                Refresh
+  r                Hard refresh
   n/b              Scroll preview down/up
   q                Quit
 """
@@ -178,6 +178,32 @@ class TidGitApp:
 
     def clear_preview_cache(self) -> None:
         self.preview_cache.clear()
+
+    def hard_refresh(self) -> None:
+        # Force curses to redraw and clear in-memory UI state so users can recover
+        # quickly from odd rendering/input states.
+        self.pending_focus = None
+        self.preview_scroll = 0
+        self.changes_scroll = 0
+        self.staged_scroll = 0
+        self.preview_mode.clear()
+        self.clear_preview_cache()
+        self.close_modal()
+
+        if is_git_repo():
+            run_cmd(["git", "update-index", "-q", "--refresh"])
+        self.refresh_data()
+
+        try:
+            self.stdscr.erase()
+            self.stdscr.refresh()
+        except curses.error:
+            pass
+
+        if self.repo_error:
+            self.set_status(self.repo_error, error=True)
+        else:
+            self.set_status("Hard refreshed")
 
     def refresh_data(self, keep_selection: bool = True) -> None:
         if not is_git_repo():
@@ -425,7 +451,7 @@ class TidGitApp:
             try:
                 self.draw()
                 h, w = self.stdscr.getmaxyx()
-                prompt = f"{title}: "
+                prompt = f"{title} (Enter submit · Esc cancel · Ctrl+R refresh): "
                 value = "".join(buf)
                 line = safe_truncate(prompt + value, w - 1)
                 self.stdscr.attron(safe_color_pair(4))
@@ -444,12 +470,16 @@ class TidGitApp:
             except curses.error:
                 continue
 
-            if ch in ("\n", "\r"):
+            if ch in ("\n", "\r", curses.KEY_ENTER):
                 try_set_cursor(0)
                 return "".join(buf)
             if ch == "\x1b":
                 try_set_cursor(0)
                 return None
+            if ch == "\x12":
+                self.hard_refresh()
+                self.set_status("Hard refreshed. Continue typing commit message.")
+                continue
             if ch in ("\b", "\x7f") or ch == curses.KEY_BACKSPACE:
                 if buf:
                     buf.pop()
@@ -819,7 +849,7 @@ class TidGitApp:
         self.stdscr.refresh()
 
     def handle_modal_input(self, ch: object) -> None:
-        if ch in ("q", "\x1b", "l", "\n", "\r"):
+        if ch in ("q", "\x1b", "l", "\n", "\r", curses.KEY_ENTER):
             self.close_modal()
             return
         if ch in ("j", curses.KEY_DOWN):
@@ -895,13 +925,12 @@ class TidGitApp:
             if ch in (curses.KEY_PPAGE, "b"):
                 self.adjust_preview_scroll(-10)
                 continue
-            if ch in ("\n", "\r"):
+            if ch in ("\n", "\r", curses.KEY_ENTER):
                 self.active_pane = "preview"
                 self.set_status("Focus: preview")
                 continue
-            if ch == "r":
-                self.refresh_data()
-                self.set_status("Refreshed")
+            if ch in ("r", "R"):
+                self.hard_refresh()
                 continue
             if ch == curses.KEY_RIGHT:
                 self.active_pane = "preview"
