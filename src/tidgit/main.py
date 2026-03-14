@@ -193,6 +193,7 @@ def is_enter_key(ch: object) -> bool:
 class TidGitApp:
     def __init__(self, stdscr: Any) -> None:
         self.stdscr = stdscr
+        self.git_user = ""
         self.branch = ""
         self.entries: List[FileEntry] = []
         self.selected = 0
@@ -210,6 +211,7 @@ class TidGitApp:
         self.modal_title = ""
         self.modal_lines: List[str] = []
         self.modal_scroll = 0
+        self.modal_selected = 0
         self.repo_error: Optional[str] = None
 
         self.reset_view = False
@@ -277,6 +279,9 @@ class TidGitApp:
             return
 
         self.repo_error = None
+        if not self.git_user:
+            code, out, _ = run_cmd(["git", "config", "user.name"])
+            self.git_user = out.strip() if code == 0 else ""
         old_row = self.current_row() if keep_selection else None
         old_key = (old_row.section, old_row.entry.path) if old_row else None
         branch, entries, err = parse_status_porcelain()
@@ -502,8 +507,10 @@ class TidGitApp:
             self.set_status(f"Log failed: {err.strip() or 'unknown error'}", error=True)
             return
         self.modal_title = " Recent Commits [MODAL] "
-        self.modal_lines = out.splitlines() if out.strip() else ["(No commits found)"]
+        lines = out.splitlines() if out.strip() else ["(No commits found)"]
+        self.modal_lines = [re.sub(r"\(HEAD\s*->[^)]*\)", "(HEAD)", ln) for ln in lines]
         self.modal_scroll = 0
+        self.modal_selected = 0
         self.set_status("Log modal open. Press q or Esc to close.")
 
     # ── Reset view ──────────────────────────────────────────────────
@@ -736,7 +743,7 @@ class TidGitApp:
 
     def draw_reset_hints(self, h: int, w: int) -> None:
         row = max(1, h - 3)
-        hint = " \u2191\u2193  Tab \u2190\u2192  Enter reset  H hard  Esc"
+        hint = " ↑↓ navigate · ←→ Tab switch · ↵ reset · H hard · Esc back"
         attr = safe_color_pair(3)
         self.stdscr.addstr(row, 0, " " * max(0, w - 1))
         self.stdscr.attron(attr)
@@ -823,16 +830,67 @@ class TidGitApp:
             try:
                 self.draw()
                 h, w = self.stdscr.getmaxyx()
-                prompt = f"{title} (Enter submit · Esc cancel · Ctrl+R refresh): "
-                value = "".join(buf)
-                line = safe_truncate(prompt + value, w - 1)
-                self.stdscr.attron(safe_color_pair(4))
-                self.stdscr.addstr(h - 1, 0, " " * max(0, w - 1))
-                self.stdscr.addstr(h - 1, 0, line)
-                self.stdscr.attroff(safe_color_pair(4))
 
-                cursor_x = min(len(prompt) + len(value), max(0, w - 2))
-                self.stdscr.move(h - 1, cursor_x)
+                box_w = max(40, min(w - 6, 70))
+                box_h = 5
+                x0 = (w - box_w) // 2
+                y0 = (h - box_h) // 2
+
+                # Shadow
+                shadow_attr = curses.A_REVERSE | curses.A_DIM
+                if x0 + box_w < w - 1:
+                    for y in range(y0 + 1, min(h - 1, y0 + box_h + 1)):
+                        self.stdscr.attron(shadow_attr)
+                        self.stdscr.addstr(y, x0 + box_w, " ")
+                        self.stdscr.attroff(shadow_attr)
+                if y0 + box_h < h - 1:
+                    self.stdscr.attron(shadow_attr)
+                    self.stdscr.addstr(y0 + box_h, x0 + 1, " " * max(0, min(box_w, w - x0 - 2)))
+                    self.stdscr.attroff(shadow_attr)
+
+                # Background
+                bg = safe_color_pair(7)
+                for y in range(y0 + 1, y0 + box_h - 1):
+                    self.stdscr.attron(bg)
+                    self.stdscr.addstr(y, x0 + 1, " " * max(0, box_w - 2))
+                    self.stdscr.attroff(bg)
+
+                # Frame
+                frame = safe_color_pair(4) | curses.A_BOLD
+                self.stdscr.attron(frame)
+                self.stdscr.addstr(y0, x0, "╭" + "─" * (box_w - 2) + "╮")
+                for y in range(y0 + 1, y0 + box_h - 1):
+                    self.stdscr.addstr(y, x0, "│")
+                    self.stdscr.addstr(y, x0 + box_w - 1, "│")
+                self.stdscr.addstr(y0 + box_h - 1, x0, "╰" + "─" * (box_w - 2) + "╯")
+                self.stdscr.attroff(frame)
+
+                # Title
+                self.stdscr.attron(frame)
+                self.stdscr.addstr(y0, x0 + 2, safe_truncate(f" {title} ", box_w - 4))
+                self.stdscr.attroff(frame)
+
+                # Input line
+                value = "".join(buf)
+                input_w = box_w - 4
+                visible_value = value
+                if len(visible_value) > input_w:
+                    visible_value = visible_value[-(input_w):]
+                input_row = y0 + 2
+                self.stdscr.attron(bg)
+                self.stdscr.addstr(input_row, x0 + 2, " " * input_w)
+                self.stdscr.addstr(input_row, x0 + 2, safe_truncate(visible_value, input_w))
+                self.stdscr.attroff(bg)
+
+                # Footer hints
+                footer = " ↵ submit · Esc cancel "
+                self.stdscr.attron(frame)
+                self.stdscr.addstr(y0 + box_h - 1, x0 + 2, safe_truncate(footer, box_w - 4))
+                self.stdscr.attroff(frame)
+
+                # Cursor
+                cursor_x = x0 + 2 + min(len(visible_value), input_w - 1)
+                self.stdscr.move(input_row, cursor_x)
                 self.stdscr.refresh()
             except curses.error:
                 pass
@@ -850,7 +908,7 @@ class TidGitApp:
                 return None
             if ch == "\x12":
                 self.hard_refresh()
-                self.set_status("Hard refreshed. Continue typing commit message.")
+                self.set_status("Refreshed. Continue typing.")
                 continue
             if ch in ("\b", "\x7f") or ch == curses.KEY_BACKSPACE:
                 if buf:
@@ -888,6 +946,7 @@ class TidGitApp:
         self.modal_title = ""
         self.modal_lines = []
         self.modal_scroll = 0
+        self.modal_selected = 0
 
     def pane_header_attr(self, pane: str) -> int:
         if self.active_pane == pane:
@@ -905,9 +964,9 @@ class TidGitApp:
         return safe_color_pair(5) | curses.A_BOLD
 
     def draw_header(self, w: int) -> None:
-        title = f" {APP_NAME} "
+        title = f" {self.git_user or APP_NAME} "
         focus = f" focus:{self.active_pane} "
-        right = focus + " q quit · r hard-refresh · l log · x reset "
+        right = focus + " q quit · r refresh "
         left_part = title + ("| " + self.branch if self.branch else "| no branch")
         content = safe_truncate(left_part, max(1, w - len(right) - 1))
         line = content + right
@@ -919,9 +978,9 @@ class TidGitApp:
 
     def draw_footer(self, w: int, h: int) -> None:
         if self.status_is_error:
-            color = safe_color_pair(3)
+            color = safe_color_pair(3) | curses.A_BOLD
         else:
-            color = safe_color_pair(2)
+            color = safe_color_pair(2) | curses.A_BOLD
         status = safe_truncate(self.status_text, w - 1)
         self.stdscr.attron(color)
         self.stdscr.addstr(h - 1, 0, " " * max(0, w - 1))
@@ -937,32 +996,48 @@ class TidGitApp:
             return safe_color_pair(11)  # purple — modified
         return 0
 
-    def entry_labels(self, e: FileEntry) -> List[str]:
+    def entry_labels(self, e: FileEntry, section: str = "") -> List[str]:
         tags: List[str] = []
         if e.conflict:
             tags.append(Label.CONFLICT)
+            return tags
+        if section == "staged":
+            if e.x == "D":
+                tags.append(Label.DELETED)
+            elif e.staged:
+                tags.append(Label.STAGED)
+            return tags
+        if section == "changes":
+            if e.y == "D":
+                tags.append(Label.DELETED)
+            elif e.untracked:
+                tags.append(Label.NEW_FILE)
+            elif e.unstaged:
+                tags.append(Label.UNSTAGED)
+            return tags
+        # No section context — single best label
         if e.x == "D" or e.y == "D":
             tags.append(Label.DELETED)
+        elif e.untracked:
+            tags.append(Label.NEW_FILE)
         elif e.staged:
             tags.append(Label.STAGED)
-        if e.unstaged and e.y != "D":
+        elif e.unstaged:
             tags.append(Label.UNSTAGED)
-        if e.untracked:
-            tags.append(Label.NEW_FILE)
         return tags
 
     def format_entry(self, e: FileEntry) -> str:
         return e.path
 
-    def label_col(self, e: FileEntry, left_w: int) -> int:
-        tags = self.entry_labels(e)
+    def label_col(self, e: FileEntry, left_w: int, section: str = "") -> int:
+        tags = self.entry_labels(e, section)
         if not tags:
             return left_w
         suffix = " ".join(tags)
         return max(0, left_w - len(suffix) - 3)
 
-    def draw_entry_labels(self, row: int, e: FileEntry, left_w: int, is_selected: bool = False, sel_attr: int = 0) -> None:
-        tags = self.entry_labels(e)
+    def draw_entry_labels(self, row: int, e: FileEntry, left_w: int, is_selected: bool = False, sel_attr: int = 0, section: str = "") -> None:
+        tags = self.entry_labels(e, section)
         if not tags:
             return
         suffix = " ".join(tags)
@@ -1059,7 +1134,7 @@ class TidGitApp:
                 entry = changes[idx].entry
                 line = safe_truncate(f"  {self.format_entry(entry)}", left_w - 1)
                 is_selected = selected_changes_idx == idx
-                highlight_end = self.label_col(entry, left_w)
+                highlight_end = self.label_col(entry, left_w, "changes")
                 if is_selected:
                     if self.active_pane == "changes":
                         selected_attr = safe_color_pair(1)
@@ -1069,7 +1144,7 @@ class TidGitApp:
                     self.stdscr.addstr(row_num, 0, " " * max(0, highlight_end))
                     self.stdscr.addstr(row_num, 0, safe_truncate(line, highlight_end))
                     self.stdscr.attroff(selected_attr)
-                    self.draw_entry_labels(row_num, entry, left_w, True, selected_attr)
+                    self.draw_entry_labels(row_num, entry, left_w, True, selected_attr, "changes")
                 else:
                     color = self.entry_color(entry)
                     if self.active_pane != "changes":
@@ -1079,7 +1154,7 @@ class TidGitApp:
                     self.stdscr.addstr(row_num, 0, line)
                     if color:
                         self.stdscr.attroff(color)
-                    self.draw_entry_labels(row_num, entry, left_w)
+                    self.draw_entry_labels(row_num, entry, left_w, section="changes")
             elif i == 0:
                 self.stdscr.attron(curses.A_DIM)
                 self.stdscr.addstr(row_num, 0, safe_truncate("  (no unstaged changes)", left_w - 1))
@@ -1108,7 +1183,7 @@ class TidGitApp:
                 entry = staged[idx].entry
                 line = safe_truncate(f"  {self.format_entry(entry)}", left_w - 1)
                 is_selected = selected_staged_idx == idx
-                highlight_end = self.label_col(entry, left_w)
+                highlight_end = self.label_col(entry, left_w, "staged")
                 if is_selected:
                     if self.active_pane == "changes":
                         selected_attr = safe_color_pair(1)
@@ -1118,7 +1193,7 @@ class TidGitApp:
                     self.stdscr.addstr(row_num, 0, " " * max(0, highlight_end))
                     self.stdscr.addstr(row_num, 0, safe_truncate(line, highlight_end))
                     self.stdscr.attroff(selected_attr)
-                    self.draw_entry_labels(row_num, entry, left_w, True, selected_attr)
+                    self.draw_entry_labels(row_num, entry, left_w, True, selected_attr, "staged")
                 else:
                     color = self.entry_color(entry) or safe_color_pair(2)
                     if self.active_pane != "changes":
@@ -1126,7 +1201,7 @@ class TidGitApp:
                     self.stdscr.attron(color)
                     self.stdscr.addstr(row_num, 0, line)
                     self.stdscr.attroff(color)
-                    self.draw_entry_labels(row_num, entry, left_w)
+                    self.draw_entry_labels(row_num, entry, left_w, section="staged")
             elif i == 0:
                 placeholder_attr = safe_color_pair(2) | curses.A_DIM
                 self.stdscr.attron(placeholder_attr)
@@ -1212,22 +1287,68 @@ class TidGitApp:
     def draw_key_hint(self, h: int, w: int) -> None:
         row = max(1, h - 2)
         self.stdscr.addstr(row, 0, " " * max(0, w - 1))
-        focus_chip = f" [{self.active_pane.upper()}] "
-        primary = "[C push]" if self.primary_action_name() == "push" else "[C commit]"
+        accent = safe_color_pair(4) | curses.A_BOLD
+        dim = curses.A_DIM
+        primary = "C push" if self.primary_action_name() == "push" else "C commit"
+
         if self.current_section() == "staged":
-            actions = f" [U unstage] {primary}"
+            stage_parts = "U unstage"
         else:
-            actions = f" [S stage] [U unstage] {primary}"
-        rest = (
-            f" [<- changes] [-> preview]{actions}"
-            " · Enter preview · p pull · P push · x reset · q quit "
-        )
-        chip = safe_truncate(focus_chip, w - 1)
-        self.stdscr.attron(self.focus_chip_attr())
-        self.stdscr.addstr(row, 0, chip)
-        self.stdscr.attroff(self.focus_chip_attr())
-        if len(chip) < w - 1:
-            self.stdscr.addstr(row, len(chip), safe_truncate(rest, w - 1 - len(chip)))
+            stage_parts = "S stage · U unstage"
+
+        box1 = f"↑↓←→ navigate · ↵ preview · {stage_parts}"
+        box2 = f"{primary} · p pull · P push · x reset"
+        rest = " r refresh · q quit"
+
+        col = 1
+        # Box 1
+        self.stdscr.attron(dim)
+        self.stdscr.addstr(row, col, "╭")
+        self.stdscr.attroff(dim)
+        col += 1
+
+        # Box 1 content — highlight preview and stage/unstage in accent
+        nav_part = "↑↓←→ navigate · "
+        self.stdscr.addstr(row, col, safe_truncate(nav_part, w - 1 - col))
+        col += len(nav_part)
+
+        preview_part = "↵ preview"
+        self.stdscr.attron(accent)
+        self.stdscr.addstr(row, col, safe_truncate(preview_part, w - 1 - col))
+        self.stdscr.attroff(accent)
+        col += len(preview_part)
+
+        sep = " · "
+        self.stdscr.addstr(row, col, safe_truncate(sep, w - 1 - col))
+        col += len(sep)
+
+        self.stdscr.attron(accent)
+        self.stdscr.addstr(row, col, safe_truncate(stage_parts, w - 1 - col))
+        self.stdscr.attroff(accent)
+        col += len(stage_parts)
+
+        self.stdscr.attron(dim)
+        self.stdscr.addstr(row, col, "╮")
+        self.stdscr.attroff(dim)
+        col += 2
+
+        # Box 2
+        self.stdscr.attron(dim)
+        self.stdscr.addstr(row, col, "╭")
+        self.stdscr.attroff(dim)
+        col += 1
+
+        self.stdscr.addstr(row, col, safe_truncate(box2, w - 1 - col))
+        col += len(box2)
+
+        self.stdscr.attron(dim)
+        self.stdscr.addstr(row, col, "╮")
+        self.stdscr.attroff(dim)
+        col += 2
+
+        # Rest
+        if col < w - 1:
+            self.stdscr.addstr(row, col, safe_truncate(rest, w - 1 - col))
 
     def draw_modal(self, h: int, w: int) -> None:
         if not self.modal_lines:
@@ -1268,17 +1389,27 @@ class TidGitApp:
         self.stdscr.attroff(frame_attr)
 
         content_h = modal_h - 3
-        max_scroll = max(0, len(self.modal_lines) - content_h)
-        self.modal_scroll = max(0, min(max_scroll, self.modal_scroll))
+        self.modal_selected = max(0, min(self.modal_selected, max(len(self.modal_lines) - 1, 0)))
+        self.modal_scroll = self.adjust_section_scroll(
+            self.modal_scroll, self.modal_selected, len(self.modal_lines), content_h
+        )
         visible = self.modal_lines[self.modal_scroll : self.modal_scroll + content_h]
 
+        sel_attr = safe_color_pair(1)
         for i, line in enumerate(visible):
             row = y0 + 1 + i
-            self.stdscr.attron(modal_bg)
-            self.stdscr.addstr(row, x0 + 1, safe_truncate(line, modal_w - 2))
-            self.stdscr.attroff(modal_bg)
+            idx = self.modal_scroll + i
+            if idx == self.modal_selected:
+                self.stdscr.attron(sel_attr)
+                self.stdscr.addstr(row, x0 + 1, " " * max(0, modal_w - 2))
+                self.stdscr.addstr(row, x0 + 1, safe_truncate(line, modal_w - 2))
+                self.stdscr.attroff(sel_attr)
+            else:
+                self.stdscr.attron(modal_bg)
+                self.stdscr.addstr(row, x0 + 1, safe_truncate(line, modal_w - 2))
+                self.stdscr.attroff(modal_bg)
 
-        footer = " j/k scroll · q/esc close · modal focus locked "
+        footer = " \u2191\u2193 navigate \u00b7 q/esc close "
         self.stdscr.attron(frame_attr)
         self.stdscr.addstr(y0 + modal_h - 1, x0 + 2, safe_truncate(footer, modal_w - 4))
         self.stdscr.attroff(frame_attr)
@@ -1310,11 +1441,13 @@ class TidGitApp:
         if ch in ("q", "\x1b", "l") or is_enter_key(ch):
             self.close_modal()
             return
+        total = len(self.modal_lines)
         if ch in ("j", curses.KEY_DOWN):
-            self.modal_scroll += 1
+            if total > 0:
+                self.modal_selected = min(self.modal_selected + 1, total - 1)
             return
         if ch in ("k", curses.KEY_UP):
-            self.modal_scroll = max(0, self.modal_scroll - 1)
+            self.modal_selected = max(0, self.modal_selected - 1)
             return
 
     def run(self) -> int:
@@ -1340,6 +1473,7 @@ class TidGitApp:
             (9, curses.COLOR_BLACK, curses.COLOR_RED),
             (10, curses.COLOR_WHITE, curses.COLOR_RED),
             (11, curses.COLOR_MAGENTA, -1),
+            (12, curses.COLOR_YELLOW, -1),
         ):
             try:
                 curses.init_pair(pair_id, fg, bg)
