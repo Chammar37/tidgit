@@ -12,6 +12,7 @@ Keybindings:
   p                Pull --rebase
   P                Push
   l                Show recent log
+  x                Open reset view
   r                Hard refresh
   n/b              Scroll preview down/up
   q                Quit
@@ -26,6 +27,8 @@ import re
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from tidgit.labels import Label
 
 APP_NAME = "tidgit"
 APP_VERSION = "0.1.0"
@@ -209,6 +212,13 @@ class TidGitApp:
         self.modal_scroll = 0
         self.repo_error: Optional[str] = None
 
+        self.reset_view = False
+        self.reset_mode = "commits"       # "commits" or "files"
+        self.reset_selected = 0
+        self.reset_scroll = 0
+        self.reset_commits: List[Tuple[str, str]] = []  # (hash, message)
+        self.reset_confirm_hard = False
+
     def set_status(self, text: str, error: bool = False) -> None:
         cleaned = re.sub(r"\s+", " ", text.replace("\r", "\n")).strip()
         self.status_text = cleaned
@@ -216,6 +226,15 @@ class TidGitApp:
 
     def clear_preview_cache(self) -> None:
         self.preview_cache.clear()
+
+    def poll_refresh(self) -> None:
+        branch, entries, err = parse_status_porcelain()
+        if err:
+            return
+        new_sig = [(e.path, e.x, e.y) for e in entries]
+        old_sig = [(e.path, e.x, e.y) for e in self.entries]
+        if new_sig != old_sig or branch != self.branch:
+            self.refresh_data()
 
     def hard_refresh(self) -> None:
         # Force curses to redraw and clear in-memory UI state so users can recover
@@ -487,6 +506,316 @@ class TidGitApp:
         self.modal_scroll = 0
         self.set_status("Log modal open. Press q or Esc to close.")
 
+    # ── Reset view ──────────────────────────────────────────────────
+
+    def enter_reset_view(self) -> None:
+        self.reset_view = True
+        self.reset_mode = "commits"
+        self.reset_selected = 0
+        self.reset_scroll = 0
+        self.reset_confirm_hard = False
+        self.load_reset_commits()
+        self.set_status("Reset view")
+
+    def exit_reset_view(self) -> None:
+        self.reset_view = False
+        self.reset_confirm_hard = False
+        self.refresh_data()
+        self.set_status("Ready")
+
+    def load_reset_commits(self) -> None:
+        code, out, err = run_cmd(["git", "--no-pager", "log", "--oneline", "--decorate", "-n", "30"])
+        if code != 0:
+            self.reset_commits = []
+            return
+        self.reset_commits = []
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                self.reset_commits.append((parts[0], parts[1]))
+            elif len(parts) == 1:
+                self.reset_commits.append((parts[0], ""))
+
+    def reset_item_count(self) -> int:
+        if self.reset_mode == "commits":
+            return len(self.reset_commits)
+        return len(self.display_rows())
+
+    def perform_reset(self) -> None:
+        if self.reset_mode == "commits":
+            if not self.reset_commits or self.reset_selected >= len(self.reset_commits):
+                self.set_status("No commit selected.", error=True)
+                return
+            commit_hash = self.reset_commits[self.reset_selected][0]
+            ok = self.run_git_action(
+                ["reset", commit_hash],
+                f"Reset to {commit_hash}",
+                "Reset failed",
+            )
+            if ok:
+                self.exit_reset_view()
+        else:
+            rows = self.display_rows()
+            if not rows or self.reset_selected >= len(rows):
+                self.set_status("No file selected.", error=True)
+                return
+            row = rows[self.reset_selected]
+            entry = row.entry
+            if entry.untracked:
+                self.set_status("Cannot reset untracked file.", error=True)
+                return
+            if not entry.staged:
+                self.set_status("File has no staged changes to reset.", error=True)
+                return
+            ok = self.run_git_action(
+                ["restore", "--staged", "--", entry.path],
+                f"Unstaged {entry.path}",
+                "Reset failed",
+            )
+            if not ok:
+                self.run_git_action(
+                    ["reset", "HEAD", "--", entry.path],
+                    f"Unstaged {entry.path}",
+                    "Reset fallback failed",
+                )
+            count = self.reset_item_count()
+            if self.reset_selected >= count and count > 0:
+                self.reset_selected = count - 1
+
+    def perform_hard_reset(self) -> None:
+        self.reset_confirm_hard = False
+        if self.reset_mode == "commits":
+            if not self.reset_commits or self.reset_selected >= len(self.reset_commits):
+                self.set_status("No commit selected.", error=True)
+                return
+            commit_hash = self.reset_commits[self.reset_selected][0]
+            ok = self.run_git_action(
+                ["reset", "--hard", commit_hash],
+                f"Hard reset to {commit_hash}",
+                "Hard reset failed",
+            )
+            if ok:
+                self.exit_reset_view()
+        else:
+            rows = self.display_rows()
+            if not rows or self.reset_selected >= len(rows):
+                self.set_status("No file selected.", error=True)
+                return
+            entry = rows[self.reset_selected].entry
+            if entry.untracked:
+                self.set_status("Cannot reset untracked file.", error=True)
+                return
+            self.run_git_action(
+                ["checkout", "HEAD", "--", entry.path],
+                f"Discarded changes to {entry.path}",
+                "Hard reset failed",
+            )
+            count = self.reset_item_count()
+            if self.reset_selected >= count and count > 0:
+                self.reset_selected = count - 1
+
+    def draw_reset_full(self) -> None:
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+        if h < 10 or w < 50:
+            self.stdscr.addstr(0, 0, "Resize terminal to at least 50x10.")
+            self.stdscr.refresh()
+            return
+        self.draw_reset_header(w)
+        self.draw_reset_tabs(w)
+        list_top = 2
+        list_h = max(1, h - 6)
+        self.draw_reset_list(list_top, w, list_h)
+        self.draw_reset_hints(h, w)
+        self.draw_hard_button(h, w)
+        self.draw_footer(w, h)
+        self.stdscr.refresh()
+
+    def draw_reset_header(self, w: int) -> None:
+        branch_name = self.branch.split("...")[0] if self.branch else "no branch"
+        left = f" {APP_NAME} | RESET \u00b7 {branch_name}"
+        right = "Esc back \u00b7 q quit "
+        content = safe_truncate(left, max(1, w - len(right) - 1))
+        padding = max(0, w - len(content) - len(right) - 1)
+        line = content + " " * padding + right
+        line = safe_truncate(line, w - 1)
+        attr = safe_color_pair(10) | curses.A_BOLD
+        self.stdscr.attron(attr)
+        self.stdscr.addstr(0, 0, " " * max(0, w - 1))
+        self.stdscr.addstr(0, 0, line)
+        self.stdscr.attroff(attr)
+
+    def draw_reset_tabs(self, w: int) -> None:
+        active_attr = safe_color_pair(9) | curses.A_BOLD
+        inactive_attr = safe_color_pair(3)
+        hint_attr = safe_color_pair(3)
+
+        commits_label = " COMMITS "
+        files_label = " FILES "
+        hint = "  Tab \u2190\u2192"
+
+        self.stdscr.addstr(1, 0, " " * max(0, w - 1))
+
+        col = 1
+        if self.reset_mode == "commits":
+            self.stdscr.attron(active_attr)
+            self.stdscr.addstr(1, col, commits_label)
+            self.stdscr.attroff(active_attr)
+            col += len(commits_label) + 1
+            self.stdscr.attron(inactive_attr)
+            self.stdscr.addstr(1, col, files_label)
+            self.stdscr.attroff(inactive_attr)
+        else:
+            self.stdscr.attron(inactive_attr)
+            self.stdscr.addstr(1, col, commits_label)
+            self.stdscr.attroff(inactive_attr)
+            col += len(commits_label) + 1
+            self.stdscr.attron(active_attr)
+            self.stdscr.addstr(1, col, files_label)
+            self.stdscr.attroff(active_attr)
+
+        col += len(files_label) + 1
+        if col + len(hint) < w:
+            self.stdscr.attron(hint_attr)
+            self.stdscr.addstr(1, col, hint)
+            self.stdscr.attroff(hint_attr)
+
+    def draw_reset_list(self, top: int, w: int, list_h: int) -> None:
+        sep_attr = safe_color_pair(3)
+        self.stdscr.attron(sep_attr)
+        self.stdscr.addstr(top, 0, safe_truncate("\u2500" * w, w - 1))
+        self.stdscr.attroff(sep_attr)
+
+        content_top = top + 1
+        content_h = max(1, list_h - 1)
+
+        if self.reset_mode == "commits":
+            items = self.reset_commits
+            total = len(items)
+        else:
+            rows = self.display_rows()
+            total = len(rows)
+
+        self.reset_scroll = self.adjust_section_scroll(
+            self.reset_scroll,
+            self.reset_selected,
+            total,
+            content_h,
+        )
+
+        sel_attr = safe_color_pair(9) | curses.A_BOLD
+
+        for i in range(content_h):
+            row_num = content_top + i
+            idx = self.reset_scroll + i
+            if idx >= total:
+                break
+            if self.reset_mode == "commits":
+                commit_hash, msg = items[idx]
+                line = f"  {commit_hash}  {msg}"
+            else:
+                dr = rows[idx]
+                section_label = Label.STAGED if dr.section == "staged" else Label.CHANGES
+                line = f"  {dr.entry.path} {section_label}"
+            line = safe_truncate(line, w - 1)
+            if idx == self.reset_selected:
+                self.stdscr.attron(sel_attr)
+                self.stdscr.addstr(row_num, 0, " " * max(0, w - 1))
+                self.stdscr.addstr(row_num, 0, line)
+                self.stdscr.attroff(sel_attr)
+            else:
+                self.stdscr.addstr(row_num, 0, line)
+
+        if total == 0:
+            empty_msg = "(no commits)" if self.reset_mode == "commits" else "(no changed files)"
+            self.stdscr.attron(curses.A_DIM)
+            self.stdscr.addstr(content_top, 2, safe_truncate(empty_msg, w - 3))
+            self.stdscr.attroff(curses.A_DIM)
+
+    def draw_reset_hints(self, h: int, w: int) -> None:
+        row = max(1, h - 3)
+        hint = " \u2191\u2193  Tab \u2190\u2192  Enter reset  H hard  Esc"
+        attr = safe_color_pair(3)
+        self.stdscr.addstr(row, 0, " " * max(0, w - 1))
+        self.stdscr.attron(attr)
+        self.stdscr.addstr(row, 0, safe_truncate(hint, w - 1))
+        self.stdscr.attroff(attr)
+
+    def draw_hard_button(self, h: int, w: int) -> None:
+        row = max(1, h - 2)
+        attr = safe_color_pair(10) | curses.A_BOLD
+        self.stdscr.attron(attr)
+        self.stdscr.addstr(row, 0, " " * max(0, w - 1))
+        if self.reset_confirm_hard:
+            label = "CONFIRM HARD RESET? ENTER confirm \u00b7 Esc cancel"
+        else:
+            label = "HARD"
+        padding = max(0, w - len(label) - 2)
+        left_pad = padding // 2
+        right_pad = padding - left_pad
+        line = "\u2588" * left_pad + " " + label + " " + "\u2588" * right_pad
+        self.stdscr.addstr(row, 0, safe_truncate(line, w - 1))
+        self.stdscr.attroff(attr)
+
+    def handle_reset_input(self, ch: object) -> None:
+        # Esc: cancel confirmation or exit view
+        if ch == "\x1b":
+            if self.reset_confirm_hard:
+                self.reset_confirm_hard = False
+            else:
+                self.exit_reset_view()
+            return
+
+        # If confirmation is active, only Enter confirms
+        if self.reset_confirm_hard:
+            if is_enter_key(ch):
+                self.perform_hard_reset()
+            else:
+                self.reset_confirm_hard = False
+            return
+
+        if ch in ("q", "Q"):
+            self.exit_reset_view()
+            return
+
+        if ch == curses.KEY_DOWN:
+            count = self.reset_item_count()
+            if count > 0:
+                self.reset_selected = min(self.reset_selected + 1, count - 1)
+            return
+
+        if ch == curses.KEY_UP:
+            self.reset_selected = max(0, self.reset_selected - 1)
+            return
+
+        if ch == "\t" or ch == curses.KEY_LEFT or ch == curses.KEY_RIGHT:
+            self.reset_mode = "files" if self.reset_mode == "commits" else "commits"
+            self.reset_selected = 0
+            self.reset_scroll = 0
+            if self.reset_mode == "commits":
+                self.load_reset_commits()
+            return
+
+        if is_enter_key(ch):
+            self.perform_reset()
+            return
+
+        if ch in ("h", "H"):
+            self.reset_confirm_hard = True
+            return
+
+        if ch == curses.KEY_NPAGE:
+            count = self.reset_item_count()
+            if count > 0:
+                self.reset_selected = min(self.reset_selected + 10, count - 1)
+            return
+
+        if ch == curses.KEY_PPAGE:
+            self.reset_selected = max(0, self.reset_selected - 10)
+            return
+
     def input_prompt(self, title: str) -> Optional[str]:
         buf: List[str] = []
         try_set_cursor(1)
@@ -578,7 +907,7 @@ class TidGitApp:
     def draw_header(self, w: int) -> None:
         title = f" {APP_NAME} "
         focus = f" focus:{self.active_pane} "
-        right = focus + " q quit · r hard-refresh · l log "
+        right = focus + " q quit · r hard-refresh · l log · x reset "
         left_part = title + ("| " + self.branch if self.branch else "| no branch")
         content = safe_truncate(left_part, max(1, w - len(right) - 1))
         line = content + right
@@ -599,18 +928,65 @@ class TidGitApp:
         self.stdscr.addstr(h - 1, 0, status)
         self.stdscr.attroff(color)
 
-    def format_entry(self, e: FileEntry) -> str:
+    def entry_color(self, e: FileEntry) -> int:
+        if e.x == "D" or e.y == "D":
+            return safe_color_pair(3)  # red — deleted
+        if e.untracked or e.x == "A":
+            return safe_color_pair(2)  # green — new/added
+        if e.unstaged or e.staged:
+            return safe_color_pair(11)  # purple — modified
+        return 0
+
+    def entry_labels(self, e: FileEntry) -> List[str]:
         tags: List[str] = []
         if e.conflict:
-            tags.append("CONFLICT")
-        if e.staged:
-            tags.append("staged")
-        if e.unstaged:
-            tags.append("unstaged")
+            tags.append(Label.CONFLICT)
+        if e.x == "D" or e.y == "D":
+            tags.append(Label.DELETED)
+        elif e.staged:
+            tags.append(Label.STAGED)
+        if e.unstaged and e.y != "D":
+            tags.append(Label.UNSTAGED)
         if e.untracked:
-            tags.append("new")
-        suffix = f"[{','.join(tags)}]" if tags else ""
-        return f"{e.path} {suffix}".strip()
+            tags.append(Label.NEW_FILE)
+        return tags
+
+    def format_entry(self, e: FileEntry) -> str:
+        return e.path
+
+    def label_col(self, e: FileEntry, left_w: int) -> int:
+        tags = self.entry_labels(e)
+        if not tags:
+            return left_w
+        suffix = " ".join(tags)
+        return max(0, left_w - len(suffix) - 3)
+
+    def draw_entry_labels(self, row: int, e: FileEntry, left_w: int, is_selected: bool = False, sel_attr: int = 0) -> None:
+        tags = self.entry_labels(e)
+        if not tags:
+            return
+        suffix = " ".join(tags)
+        dot_col = max(0, left_w - len(suffix) - 1)
+        edge_col = dot_col - 2
+
+        if is_selected and sel_attr:
+            # draw the transition edge: "▐ " in the selection color on default bg
+            # ▐ is right-half-block — it creates a visual "end cap" for the highlight
+            if edge_col > 0:
+                self.stdscr.attron(sel_attr)
+                self.stdscr.addstr(row, edge_col, "\u2590")
+                self.stdscr.attroff(sel_attr)
+                self.stdscr.addstr(row, edge_col + 1, " ")
+        else:
+            if edge_col > 0:
+                self.stdscr.addstr(row, edge_col, "  ")
+
+        color = self.entry_color(e)
+        if color:
+            self.stdscr.attron(color)
+        self.stdscr.addstr(row, dot_col, suffix)
+        if color:
+            self.stdscr.attroff(color)
 
     def draw_left_panel(self, top: int, left_w: int, body_h: int) -> None:
         title = " files "
@@ -680,23 +1056,30 @@ class TidGitApp:
             row_num = changes_header_row + 1 + i
             idx = self.changes_scroll + i
             if idx < len(changes):
-                line = safe_truncate(f"  {self.format_entry(changes[idx].entry)}", left_w - 1)
+                entry = changes[idx].entry
+                line = safe_truncate(f"  {self.format_entry(entry)}", left_w - 1)
                 is_selected = selected_changes_idx == idx
+                highlight_end = self.label_col(entry, left_w)
                 if is_selected:
                     if self.active_pane == "changes":
                         selected_attr = safe_color_pair(1)
                     else:
                         selected_attr = safe_color_pair(7) | curses.A_DIM
                     self.stdscr.attron(selected_attr)
-                    self.stdscr.addstr(row_num, 0, " " * max(0, left_w - 1))
-                    self.stdscr.addstr(row_num, 0, line)
+                    self.stdscr.addstr(row_num, 0, " " * max(0, highlight_end))
+                    self.stdscr.addstr(row_num, 0, safe_truncate(line, highlight_end))
                     self.stdscr.attroff(selected_attr)
+                    self.draw_entry_labels(row_num, entry, left_w, True, selected_attr)
                 else:
+                    color = self.entry_color(entry)
                     if self.active_pane != "changes":
-                        self.stdscr.attron(curses.A_DIM)
+                        color = (color or curses.A_DIM) | curses.A_DIM
+                    if color:
+                        self.stdscr.attron(color)
                     self.stdscr.addstr(row_num, 0, line)
-                    if self.active_pane != "changes":
-                        self.stdscr.attroff(curses.A_DIM)
+                    if color:
+                        self.stdscr.attroff(color)
+                    self.draw_entry_labels(row_num, entry, left_w)
             elif i == 0:
                 self.stdscr.attron(curses.A_DIM)
                 self.stdscr.addstr(row_num, 0, safe_truncate("  (no unstaged changes)", left_w - 1))
@@ -722,24 +1105,28 @@ class TidGitApp:
             row_num = staged_header_row + 1 + i
             idx = self.staged_scroll + i
             if idx < len(staged):
-                line = safe_truncate(f"  {self.format_entry(staged[idx].entry)}", left_w - 1)
+                entry = staged[idx].entry
+                line = safe_truncate(f"  {self.format_entry(entry)}", left_w - 1)
                 is_selected = selected_staged_idx == idx
+                highlight_end = self.label_col(entry, left_w)
                 if is_selected:
                     if self.active_pane == "changes":
                         selected_attr = safe_color_pair(1)
                     else:
                         selected_attr = safe_color_pair(7) | curses.A_DIM
                     self.stdscr.attron(selected_attr)
-                    self.stdscr.addstr(row_num, 0, " " * max(0, left_w - 1))
-                    self.stdscr.addstr(row_num, 0, line)
+                    self.stdscr.addstr(row_num, 0, " " * max(0, highlight_end))
+                    self.stdscr.addstr(row_num, 0, safe_truncate(line, highlight_end))
                     self.stdscr.attroff(selected_attr)
+                    self.draw_entry_labels(row_num, entry, left_w, True, selected_attr)
                 else:
-                    staged_attr = safe_color_pair(2)
+                    color = self.entry_color(entry) or safe_color_pair(2)
                     if self.active_pane != "changes":
-                        staged_attr |= curses.A_DIM
-                    self.stdscr.attron(staged_attr)
+                        color |= curses.A_DIM
+                    self.stdscr.attron(color)
                     self.stdscr.addstr(row_num, 0, line)
-                    self.stdscr.attroff(staged_attr)
+                    self.stdscr.attroff(color)
+                    self.draw_entry_labels(row_num, entry, left_w)
             elif i == 0:
                 placeholder_attr = safe_color_pair(2) | curses.A_DIM
                 self.stdscr.attron(placeholder_attr)
@@ -798,6 +1185,30 @@ class TidGitApp:
             if color:
                 self.stdscr.attroff(safe_color_pair(color))
 
+    def draw_legend(self, h: int, w: int) -> None:
+        row = max(1, h - 3)
+        self.stdscr.addstr(row, 0, " " * max(0, w - 1))
+        col = 1
+        for symbol, label, color_pair in (
+            (Label.NEW_FILE, " added  ", 2),
+            (Label.DELETED, " deleted  ", 3),
+            (Label.UNSTAGED, " modified  ", 11),
+            (Label.CONFLICT, " conflict  ", 3),
+        ):
+            if col + len(symbol) + len(label) >= w:
+                break
+            attr = safe_color_pair(color_pair) if color_pair else 0
+            if attr:
+                self.stdscr.attron(attr)
+            self.stdscr.addstr(row, col, symbol)
+            if attr:
+                self.stdscr.attroff(attr)
+            col += len(symbol)
+            self.stdscr.attron(curses.A_DIM)
+            self.stdscr.addstr(row, col, label)
+            self.stdscr.attroff(curses.A_DIM)
+            col += len(label)
+
     def draw_key_hint(self, h: int, w: int) -> None:
         row = max(1, h - 2)
         self.stdscr.addstr(row, 0, " " * max(0, w - 1))
@@ -809,7 +1220,7 @@ class TidGitApp:
             actions = f" [S stage] [U unstage] {primary}"
         rest = (
             f" [<- changes] [-> preview]{actions}"
-            " · j/k move/scroll · Enter preview · p pull · P push · q quit "
+            " · Enter preview · p pull · P push · x reset · q quit "
         )
         chip = safe_truncate(focus_chip, w - 1)
         self.stdscr.attron(self.focus_chip_attr())
@@ -873,6 +1284,9 @@ class TidGitApp:
         self.stdscr.attroff(frame_attr)
 
     def draw(self) -> None:
+        if self.reset_view:
+            self.draw_reset_full()
+            return
         self.stdscr.erase()
         h, w = self.stdscr.getmaxyx()
         if h < 10 or w < 50:
@@ -882,10 +1296,11 @@ class TidGitApp:
 
         self.draw_header(w)
         body_top = 1
-        body_h = max(1, h - 3)
+        body_h = max(1, h - 4)
         left_w = max(30, min(w // 2, 56))
         self.draw_left_panel(body_top, left_w, body_h)
         self.draw_right_panel(body_top, left_w, w, body_h)
+        self.draw_legend(h, w)
         self.draw_key_hint(h, w)
         self.draw_footer(w, h)
         self.draw_modal(h, w)
@@ -922,6 +1337,9 @@ class TidGitApp:
             (6, curses.COLOR_WHITE, -1),
             (7, curses.COLOR_BLACK, curses.COLOR_WHITE),
             (8, curses.COLOR_BLACK, curses.COLOR_BLUE),
+            (9, curses.COLOR_BLACK, curses.COLOR_RED),
+            (10, curses.COLOR_WHITE, curses.COLOR_RED),
+            (11, curses.COLOR_MAGENTA, -1),
         ):
             try:
                 curses.init_pair(pair_id, fg, bg)
@@ -934,6 +1352,8 @@ class TidGitApp:
         else:
             self.set_status("Ready")
 
+        self.stdscr.timeout(2000)
+
         while True:
             try:
                 self.draw()
@@ -942,10 +1362,15 @@ class TidGitApp:
             try:
                 ch = self.stdscr.get_wch()
             except curses.error:
+                self.poll_refresh()
                 continue
 
             if self.modal_lines:
                 self.handle_modal_input(ch)
+                continue
+
+            if self.reset_view:
+                self.handle_reset_input(ch)
                 continue
 
             if ch in ("q", "Q"):
@@ -1002,6 +1427,9 @@ class TidGitApp:
                 continue
             if ch == "l":
                 self.show_log_modal()
+                continue
+            if ch == "x":
+                self.enter_reset_view()
                 continue
 
 

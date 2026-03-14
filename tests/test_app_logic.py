@@ -303,3 +303,59 @@ def test_set_status_flattens_multiline_text() -> None:
 
     assert "\n" not in app.status_text
     assert app.status_text == "[master abc] msg 1 file changed, 2 insertions(+)"
+
+
+def test_entry_labels_untracked_shows_new() -> None:
+    from tidgit.labels import Label
+    app = tm.TidGitApp(DummyWindow())
+    entry = make_entry("readme.md", untracked=True, x="?", y="?")
+    assert Label.NEW_FILE in app.entry_labels(entry)
+
+
+def test_entry_labels_unstaged_shows_unstaged() -> None:
+    from tidgit.labels import Label
+    app = tm.TidGitApp(DummyWindow())
+    entry = make_entry("app.py", unstaged=True, y="M")
+    assert Label.UNSTAGED in app.entry_labels(entry)
+
+
+def test_entry_labels_staged_shows_staged() -> None:
+    from tidgit.labels import Label
+    app = tm.TidGitApp(DummyWindow())
+    entry = make_entry("app.py", staged=True, x="M")
+    assert Label.STAGED in app.entry_labels(entry)
+
+
+def test_entry_labels_conflict_shows_conflict() -> None:
+    from tidgit.labels import Label
+    app = tm.TidGitApp(DummyWindow())
+    entry = make_entry("app.py", conflict=True, x="U", y="U")
+    assert Label.CONFLICT in app.entry_labels(entry)
+
+
+def test_entry_labels_deleted_shows_deleted() -> None:
+    from tidgit.labels import Label
+    app = tm.TidGitApp(DummyWindow())
+    entry = make_entry("app.py", unstaged=True, x=" ", y="D")
+    assert Label.DELETED in app.entry_labels(entry)
+
+
+def test_entry_labels_multiple_tags() -> None:
+    from tidgit.labels import Label
+    app = tm.TidGitApp(DummyWindow())
+    entry = make_entry("app.py", staged=True, unstaged=True, x="M", y="M")
+    labels = app.entry_labels(entry)
+    assert Label.STAGED in labels
+    assert Label.UNSTAGED in labels
+
+
+def test_entry_labels_clean_file_has_no_tags() -> None:
+    app = tm.TidGitApp(DummyWindow())
+    entry = make_entry("app.py")
+    assert app.entry_labels(entry) == []
+
+
+def test_format_entry_returns_path_only() -> None:
+    app = tm.TidGitApp(DummyWindow())
+    entry = make_entry("app.py", staged=True, unstaged=True, x="M", y="M")
+    assert app.format_entry(entry) == "app.py"
