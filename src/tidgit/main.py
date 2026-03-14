@@ -474,10 +474,10 @@ class TidGitApp:
                 self.pending_focus = None
 
     def pull_rebase(self) -> None:
-        self.run_git_action(["pull", "--rebase"], "Pull completed", "Pull failed")
+        self.run_git_action(["pull", "--rebase"], "✔ Pull completed", "Pull failed")
 
     def push(self) -> None:
-        self.run_git_action(["push"], "Push completed", "Push failed")
+        self.run_git_action(["push"], "✔ Push completed", "Push failed")
 
     def commit_prompt(self) -> None:
         msg = self.input_prompt("Commit message")
@@ -487,7 +487,7 @@ class TidGitApp:
         if not msg.strip():
             self.set_status("Commit message cannot be empty.", error=True)
             return
-        self.run_git_action(["commit", "-m", msg.strip()], "Commit created", "Commit failed")
+        self.run_git_action(["commit", "-m", msg.strip()], "✔ Commit created", "Commit failed")
 
     def commit_all_prompt(self) -> None:
         msg = self.input_prompt("Commit message")
@@ -499,7 +499,7 @@ class TidGitApp:
             return
         if not self.run_git_action(["add", "-A"], "Staged all changes", "Stage-all failed"):
             return
-        self.run_git_action(["commit", "-m", msg.strip()], "Commit created", "Commit failed")
+        self.run_git_action(["commit", "-m", msg.strip()], "✔ Commit created", "Commit failed")
 
     def show_log_modal(self) -> None:
         code, out, err = run_cmd(["git", "--no-pager", "log", "--oneline", "--decorate", "-n", "30"])
