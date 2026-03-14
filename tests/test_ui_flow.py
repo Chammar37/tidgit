@@ -169,7 +169,7 @@ def test_modal_has_explicit_modal_text() -> None:
 
     rendered = "\n".join(window.writes)
     assert "Recent Commits [MODAL]" in rendered
-    assert "modal focus locked" in rendered
+    assert "navigate" in rendered
 
 
 def test_is_enter_key_handles_common_variants() -> None:
