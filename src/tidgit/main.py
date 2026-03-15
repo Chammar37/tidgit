@@ -25,6 +25,7 @@ import curses
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -33,6 +34,7 @@ from tidgit.labels import Label
 APP_NAME = "tidgit"
 APP_VERSION = "0.1.0"
 DEFAULT_CMD_TIMEOUT_SECONDS = 20
+EXIT_ALT_SCREEN = "\033[?1049l"
 
 
 @dataclass
@@ -237,6 +239,11 @@ class TidGitApp:
         old_sig = [(e.path, e.x, e.y) for e in self.entries]
         if new_sig != old_sig or branch != self.branch:
             self.refresh_data()
+
+    def _sync_terminal_size(self) -> None:
+        size = os.get_terminal_size()
+        curses.resizeterm(size.lines, size.columns)
+        self.stdscr.clear()
 
     def hard_refresh(self) -> None:
         # Force curses to redraw and clear in-memory UI state so users can recover
@@ -1261,7 +1268,7 @@ class TidGitApp:
                 self.stdscr.attroff(safe_color_pair(color))
 
     def draw_legend(self, h: int, w: int) -> None:
-        row = max(1, h - 3)
+        row = max(1, h - 5)
         self.stdscr.addstr(row, 0, " " * max(0, w - 1))
         col = 1
         for symbol, label, color_pair in (
@@ -1284,9 +1291,86 @@ class TidGitApp:
             self.stdscr.attroff(curses.A_DIM)
             col += len(label)
 
+    def _draw_box(self, top_row: int, mid_row: int, bot_row: int,
+                  col: int, w: int, inner_w: int,
+                  dim: int, content_parts: list) -> int:
+        """Draw a 3-row box and return the column after the box + gap.
+
+        content_parts is a list of (text, attr_or_None) tuples for the
+        middle row.  attr_or_None=None means use the default attribute.
+        Uses curses ACS characters for borders (guaranteed single-cell).
+        """
+        max_col = w - 1
+        box_w = inner_w + 4  # border + space + content + space + border
+
+        if col >= max_col:
+            return col
+
+        # Top border: ┌──────┐
+        self.stdscr.attron(dim)
+        c = col
+        if c < max_col:
+            self.stdscr.addch(top_row, c, curses.ACS_ULCORNER)
+            c += 1
+        for _ in range(inner_w + 2):
+            if c >= max_col:
+                break
+            self.stdscr.addch(top_row, c, curses.ACS_HLINE)
+            c += 1
+        if c < max_col:
+            self.stdscr.addch(top_row, c, curses.ACS_URCORNER)
+        self.stdscr.attroff(dim)
+
+        # Bottom border: └──────┘
+        self.stdscr.attron(dim)
+        c = col
+        if c < max_col:
+            self.stdscr.addch(bot_row, c, curses.ACS_LLCORNER)
+            c += 1
+        for _ in range(inner_w + 2):
+            if c >= max_col:
+                break
+            self.stdscr.addch(bot_row, c, curses.ACS_HLINE)
+            c += 1
+        if c < max_col:
+            self.stdscr.addch(bot_row, c, curses.ACS_LRCORNER)
+        self.stdscr.attroff(dim)
+
+        # Middle: │ content │
+        mcol = col
+        if mcol < max_col:
+            self.stdscr.attron(dim)
+            self.stdscr.addch(mid_row, mcol, curses.ACS_VLINE)
+            self.stdscr.attroff(dim)
+            mcol += 1
+        if mcol < max_col:
+            self.stdscr.addstr(mid_row, mcol, " ")
+            mcol += 1
+
+        for text, attr in content_parts:
+            if mcol >= max_col:
+                break
+            if attr is not None:
+                self.stdscr.attron(attr)
+            self.stdscr.addstr(mid_row, mcol, safe_truncate(text, max_col - mcol))
+            if attr is not None:
+                self.stdscr.attroff(attr)
+            mcol += len(text)
+
+        if mcol < max_col:
+            self.stdscr.addstr(mid_row, mcol, " ")
+            mcol += 1
+        if mcol < max_col:
+            self.stdscr.attron(dim)
+            self.stdscr.addch(mid_row, mcol, curses.ACS_VLINE)
+            self.stdscr.attroff(dim)
+
+        return col + box_w + 1  # +1 gap
+
     def draw_key_hint(self, h: int, w: int) -> None:
-        row = max(1, h - 2)
-        self.stdscr.addstr(row, 0, " " * max(0, w - 1))
+        top_row = max(1, h - 4)
+        mid_row = max(1, h - 3)
+        bot_row = max(1, h - 2)
         accent = safe_color_pair(4) | curses.A_BOLD
         dim = curses.A_DIM
         primary = "C push" if self.primary_action_name() == "push" else "C commit"
@@ -1296,59 +1380,36 @@ class TidGitApp:
         else:
             stage_parts = "S stage · U unstage"
 
-        box1 = f"↑↓←→ navigate · ↵ preview · {stage_parts}"
+        nav_part = "↑↓←→ navigate · "
+        preview_part = "↵ preview"
+        sep = " · "
+        box1_inner = len(nav_part) + len(preview_part) + len(sep) + len(stage_parts)
+
         box2 = f"{primary} · p pull · P push · x reset"
+        box2_inner = len(box2)
+
         rest = " r refresh · q quit"
 
-        col = 1
+        # Clear all 3 rows
+        for r in (top_row, mid_row, bot_row):
+            self.stdscr.addstr(r, 0, " " * max(0, w - 1))
+
         # Box 1
-        self.stdscr.attron(dim)
-        self.stdscr.addstr(row, col, "╭")
-        self.stdscr.attroff(dim)
-        col += 1
-
-        # Box 1 content — highlight preview and stage/unstage in accent
-        nav_part = "↑↓←→ navigate · "
-        self.stdscr.addstr(row, col, safe_truncate(nav_part, w - 1 - col))
-        col += len(nav_part)
-
-        preview_part = "↵ preview"
-        self.stdscr.attron(accent)
-        self.stdscr.addstr(row, col, safe_truncate(preview_part, w - 1 - col))
-        self.stdscr.attroff(accent)
-        col += len(preview_part)
-
-        sep = " · "
-        self.stdscr.addstr(row, col, safe_truncate(sep, w - 1 - col))
-        col += len(sep)
-
-        self.stdscr.attron(accent)
-        self.stdscr.addstr(row, col, safe_truncate(stage_parts, w - 1 - col))
-        self.stdscr.attroff(accent)
-        col += len(stage_parts)
-
-        self.stdscr.attron(dim)
-        self.stdscr.addstr(row, col, "╮")
-        self.stdscr.attroff(dim)
-        col += 2
+        col = self._draw_box(top_row, mid_row, bot_row, 1, w, box1_inner, dim, [
+            (nav_part, None),
+            (preview_part, accent),
+            (sep, None),
+            (stage_parts, accent),
+        ])
 
         # Box 2
-        self.stdscr.attron(dim)
-        self.stdscr.addstr(row, col, "╭")
-        self.stdscr.attroff(dim)
-        col += 1
+        col = self._draw_box(top_row, mid_row, bot_row, col, w, box2_inner, dim, [
+            (box2, None),
+        ])
 
-        self.stdscr.addstr(row, col, safe_truncate(box2, w - 1 - col))
-        col += len(box2)
-
-        self.stdscr.attron(dim)
-        self.stdscr.addstr(row, col, "╮")
-        self.stdscr.attroff(dim)
-        col += 2
-
-        # Rest
+        # Rest (unboxed)
         if col < w - 1:
-            self.stdscr.addstr(row, col, safe_truncate(rest, w - 1 - col))
+            self.stdscr.addstr(mid_row, col, safe_truncate(rest, w - 1 - col))
 
     def draw_modal(self, h: int, w: int) -> None:
         if not self.modal_lines:
@@ -1427,7 +1488,7 @@ class TidGitApp:
 
         self.draw_header(w)
         body_top = 1
-        body_h = max(1, h - 4)
+        body_h = max(1, h - 6)
         left_w = max(30, min(w // 2, 56))
         self.draw_left_panel(body_top, left_w, body_h)
         self.draw_right_panel(body_top, left_w, w, body_h)
@@ -1492,11 +1553,16 @@ class TidGitApp:
             try:
                 self.draw()
             except curses.error:
-                continue
+                self._sync_terminal_size()
+                curses.napms(50)
             try:
                 ch = self.stdscr.get_wch()
             except curses.error:
                 self.poll_refresh()
+                continue
+
+            if ch == curses.KEY_RESIZE:
+                self._sync_terminal_size()
                 continue
 
             if self.modal_lines:
@@ -1586,13 +1652,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("TERM is not set. Start from a real terminal.")
         return 1
 
+    if sys.stdout.isatty():
+        sys.stdout.write(EXIT_ALT_SCREEN)
+        sys.stdout.flush()
+
+    def _run(stdscr: Any) -> int:
+        try:
+            return TidGitApp(stdscr).run()
+        except KeyboardInterrupt:
+            return 130
+
     try:
-        return curses.wrapper(lambda stdscr: TidGitApp(stdscr).run())
+        return curses.wrapper(_run)
     except KeyboardInterrupt:
         return 130
     except curses.error as exc:
         print(f"Terminal UI error: {exc}")
         return 1
+    finally:
+        if sys.stdout.isatty():
+            try:
+                curses.endwin()
+            except curses.error:
+                pass
+            sys.stdout.write(EXIT_ALT_SCREEN)
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":
