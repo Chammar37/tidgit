@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import curses
+import logging
 import os
 import re
 import subprocess
@@ -31,6 +32,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from tidgit.labels import Label
+
+log = logging.getLogger("tidgit")
 
 APP_NAME = "tidgit"
 APP_VERSION = "0.1.0"
@@ -245,8 +248,14 @@ class TidGitApp:
 
     def _sync_terminal_size(self) -> None:
         size = os.get_terminal_size()
-        curses.resizeterm(size.lines, size.columns)
-        self.stdscr.clear()
+        cur_h, cur_w = self.stdscr.getmaxyx()
+        log.debug("_sync_terminal_size: os=%dx%d curses=%dx%d",
+                  size.columns, size.lines, cur_w, cur_h)
+        if size.lines != cur_h or size.columns != cur_w:
+            curses.resizeterm(size.lines, size.columns)
+            self.stdscr.clear()
+            log.debug("_sync_terminal_size: resized to %dx%d",
+                      size.columns, size.lines)
 
     def hard_refresh(self) -> None:
         # Force curses to redraw and clear in-memory UI state so users can recover
@@ -1516,7 +1525,9 @@ class TidGitApp:
             self.draw_reset_full()
             return
         h, w = self.stdscr.getmaxyx()
+        log.debug("draw: h=%d w=%d", h, w)
         if h < 10 or w < 50:
+            log.debug("draw: too small, showing resize message")
             self.stdscr.erase()
             msg = f"Resize terminal to at least 50x10 (current: {w}x{h})."
             self.stdscr.addstr(0, 0, safe_truncate(msg, max(w - 1, 1)))
@@ -1591,7 +1602,8 @@ class TidGitApp:
         while True:
             try:
                 self.draw()
-            except curses.error:
+            except curses.error as e:
+                log.debug("draw raised curses.error: %s", e)
                 self._sync_terminal_size()
                 curses.napms(50)
             try:
@@ -1600,7 +1612,12 @@ class TidGitApp:
                 self.poll_refresh()
                 continue
 
+            log.debug("input: %r", ch)
+
             if ch == curses.KEY_RESIZE:
+                log.debug("KEY_RESIZE received")
+                # Drain any queued resize events to avoid feedback loop
+                curses.flushinp()
                 self._sync_terminal_size()
                 continue
 
@@ -1691,11 +1708,20 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         description="Minimal git terminal UI with core commands.",
     )
     parser.add_argument("--version", action="store_true", help="Print tidgit version and exit.")
+    parser.add_argument("--debug", action="store_true", help="Write debug log to /tmp/tidgit.log.")
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
+    if args.debug:
+        logging.basicConfig(
+            filename="/tmp/tidgit.log",
+            level=logging.DEBUG,
+            format="%(asctime)s %(message)s",
+            datefmt="%H:%M:%S",
+        )
+        log.debug("--- tidgit started with --debug ---")
     if args.version:
         print(f"{APP_NAME} {APP_VERSION}")
         return 0
