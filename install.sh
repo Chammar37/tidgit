@@ -29,6 +29,40 @@ find_python() {
     return 1
 }
 
+# ── Ensure pipx is available ─────────────────────────────────────────
+
+ensure_pipx() {
+    if command -v pipx >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # On macOS with Homebrew, install pipx via brew
+    if command -v brew >/dev/null 2>&1; then
+        info "pipx not found — installing via brew ..."
+        brew install pipx >/dev/null 2>&1
+        pipx ensurepath >/dev/null 2>&1 || true
+        if command -v pipx >/dev/null 2>&1; then
+            return 0
+        fi
+        # brew may put pipx somewhere not yet on PATH in this shell
+        BREW_PREFIX=$(brew --prefix)
+        if [ -x "${BREW_PREFIX}/bin/pipx" ]; then
+            export PATH="${BREW_PREFIX}/bin:${PATH}"
+            return 0
+        fi
+    fi
+
+    # Try pip-installing pipx as a last resort
+    if "$PYTHON" -m pip install --user pipx >/dev/null 2>&1; then
+        "$PYTHON" -m pipx ensurepath >/dev/null 2>&1 || true
+        if command -v pipx >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 main() {
@@ -41,21 +75,11 @@ main() {
     PY_VER=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
     ok "Found Python $PY_VER ($PYTHON)"
 
-    # Prefer pipx for isolated install
-    if command -v pipx >/dev/null 2>&1; then
-        info "Installing with pipx ..."
-        pipx install "git+https://github.com/${REPO}.git" --force --python "$PYTHON"
-        ok "Installed with pipx"
+    ensure_pipx || die "Could not install pipx. Install it manually: brew install pipx"
 
-    # Fall back to pip --user
-    elif "$PYTHON" -m pip --version >/dev/null 2>&1; then
-        info "pipx not found, using pip install --user ..."
-        "$PYTHON" -m pip install --user "git+https://github.com/${REPO}.git" --quiet --force-reinstall
-        ok "Installed with pip --user"
-
-    else
-        die "Neither pipx nor pip found. Install one of them first."
-    fi
+    info "Installing with pipx ..."
+    pipx install "git+https://github.com/${REPO}.git" --force --python "$PYTHON"
+    ok "Installed with pipx"
 
     # Verify
     if command -v tidgit >/dev/null 2>&1; then
@@ -63,8 +87,8 @@ main() {
     else
         echo ""
         err "tidgit was installed but isn't on your PATH."
-        info "If you used pip --user, add this to your shell profile:"
-        info "  export PATH=\"\$($PYTHON -m site --user-base)/bin:\$PATH\""
+        info "Run: pipx ensurepath"
+        info "Then restart your shell."
         echo ""
     fi
 }
