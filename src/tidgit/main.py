@@ -12,6 +12,7 @@ Keybindings:
   p                Pull --rebase
   P                Push
   l                Show recent log
+  d                Discard changes (confirm with Enter)
   x                Open reset view
   r                Hard refresh
   n/b              Scroll preview down/up
@@ -1514,12 +1515,15 @@ class TidGitApp:
         if self.reset_view:
             self.draw_reset_full()
             return
-        self.stdscr.erase()
         h, w = self.stdscr.getmaxyx()
         if h < 10 or w < 50:
-            self.stdscr.addstr(0, 0, "Resize terminal to at least 50x10.")
-            self.stdscr.refresh()
+            self.stdscr.erase()
+            msg = f"Resize terminal to at least 50x10 (current: {w}x{h})."
+            self.stdscr.addstr(0, 0, safe_truncate(msg, max(w - 1, 1)))
+            self.stdscr.noutrefresh()
+            curses.doupdate()
             return
+        self.stdscr.erase()
 
         self.draw_header(w)
         body_top = 1

@@ -1,98 +1,98 @@
 # tidgit
 
-`tidgit` is a minimal terminal Git TUI inspired by lazygit, focused on core workflows and clear terminal UX.
+A minimal terminal Git TUI focused on core workflows and clear terminal UX. Zero dependencies — just Python and curses.
 
-## Git Functions
+## Install
 
-- Separate left-pane sections for `CHANGES` and `STAGED`
-- View branch/status and changed files
-- Preview diffs for staged, unstaged, and untracked files
-- Stage selected file (`git add -- <file>`)
-- Unstage selected file (`git restore --staged -- <file>`)
-- Commit staged changes (`git commit -m "..."`)
-- Pull latest changes with rebase (`git pull --rebase`)
-- Push local commits (`git push`)
-- View recent commit history (`git log --oneline --decorate -n 30`)
-- Refresh working tree status
-
-## Run
-
-```bash
-./tidgit
+```sh
+curl -sSL https://raw.githubusercontent.com/Chammar37/tidgit/master/install.sh | sh
 ```
 
-Optional:
+This auto-detects your system and installs via:
+- **Homebrew** (macOS, if `brew` is available)
+- **pipx** (isolated Python environment)
+- **pip --user** (fallback)
 
-```bash
-./tidgit --version
-./tidgit --help
+Requires Python 3.11+.
+
+### Other install methods
+
+```sh
+# Homebrew directly
+brew install Chammar37/tidgit/tidgit
+
+# pipx
+pipx install git+https://github.com/Chammar37/tidgit.git
+
+# pip
+pip install git+https://github.com/Chammar37/tidgit.git
 ```
+
+## Usage
+
+Run inside any git repository:
+
+```sh
+tidgit
+```
+
+## Features
+
+- Split-pane layout: **Changes** (left) and **Diff preview** (right)
+- Separate sections for unstaged/untracked and staged files
+- Stage and unstage individual files
+- Commit with inline message prompt
+- Pull with rebase / Push
+- Discard working-tree changes (with confirmation)
+- Reset view — soft and hard reset to any recent commit or file
+- View recent commit log
+- Color-coded file labels: added, deleted, modified, conflict
+- Keyboard-driven — no mouse needed
 
 ## Keybindings
 
-- `j` / `k` or `Up` / `Down`: move selection
-- `Right Arrow`: focus preview pane
-- `Left Arrow`: focus changes pane
-- `Enter`: focus preview pane for the selected file
-- `s`: stage selected file
-- `u`: unstage selected file
-- `c`: primary action button (commit when staged changes exist, push when branch is ahead)
-- `p`: pull with rebase
-- `P`: push
-- `l`: show recent commits
-- `r`: refresh
-- `n` / `b`: scroll preview down/up
-- `q`: quit
+| Key | Action |
+|-----|--------|
+| `j` / `k` or `Up` / `Down` | Move selection |
+| `Right` / `Left` | Switch focus between changes and preview |
+| `Enter` | Focus preview pane |
+| `s` | Stage selected file |
+| `u` | Unstage selected file |
+| `d` | Discard changes to selected file (confirm with Enter) |
+| `c` | Commit (or push, when branch is ahead) |
+| `p` | Pull with rebase |
+| `P` | Push |
+| `l` | Show recent commits |
+| `x` | Open reset view |
+| `r` | Refresh |
+| `n` / `b` | Scroll preview down / up |
+| `q` | Quit |
 
-When a staged file is highlighted, the bottom action menu switches to staged-focused actions (for example `U unstage` and commit/push).
+### Reset view
 
-## Production Validation
+| Key | Action |
+|-----|--------|
+| `Up` / `Down` | Navigate commits or files |
+| `Left` / `Right` or `Tab` | Switch between commits and files |
+| `Enter` | Soft reset |
+| `H` | Hard reset (with confirmation) |
+| `Esc` | Back to main view |
 
-```bash
-make install-dev
-make check
-make smoke
-make package
+## Development
+
+```sh
+make install-dev   # editable install with dev deps
+make check         # lint + typecheck + test
+make smoke         # quick sanity check
+make package       # build wheel + sdist
 ```
 
-Validation gates included out of the box:
+## Requirements
 
-- Lint: `ruff`
-- Type checking: `mypy --strict`
-- Test suite: `pytest` (unit + integration)
-- Coverage gate: fail under 70%
-- Packaging checks: `python -m build` + `twine check`
+- Python 3.11+
+- A terminal with curses support
+- Must be run inside a git repository
 
-## Homebrew Formula
+## License
 
-Generate a release formula from the built source tarball:
-
-```bash
-make formula REPO=marcchami/tidgit
-```
-
-This writes `Formula/tidgit.rb` with the correct SHA256 for the current `dist/tidgit-<version>.tar.gz`.
-
-## Web Download + Brew Install
-
-Release publishing is automated by `.github/workflows/release.yml` on tags like `v0.1.0`.
-
-Release assets uploaded to GitHub Releases:
-
-- `dist/*.whl`
-- `dist/*.tar.gz`
-- `dist/SHA256SUMS.txt`
-- `Formula/tidgit.rb`
-
-After release, install from the web:
-
-```bash
-brew install https://raw.githubusercontent.com/marcchami/tidgit/main/Formula/tidgit.rb
-```
-
-## Notes
-
-- Run inside a git repository.
-- If not in a git repo, the UI shows an explicit error state.
-- For untracked files, preview uses a no-index diff against `/dev/null`.
-- Active pane focus is high-contrast (lazygit-inspired accents).
+MIT
