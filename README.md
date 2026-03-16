@@ -8,20 +8,12 @@ A minimal terminal Git TUI focused on core workflows and clear terminal UX. Zero
 curl -sSL https://raw.githubusercontent.com/Chammar37/tidgit/master/install.sh | sh
 ```
 
-This auto-detects your system and installs via:
-- **Homebrew** (macOS, if `brew` is available)
-- **pipx** (isolated Python environment)
-- **pip --user** (fallback)
-
-Requires Python 3.11+.
+Requires Python 3.11+. Installs via **pipx** (preferred) or **pip**.
 
 ### Other install methods
 
 ```sh
-# Homebrew directly
-brew install Chammar37/tidgit/tidgit
-
-# pipx
+# pipx (isolated environment)
 pipx install git+https://github.com/Chammar37/tidgit.git
 
 # pip

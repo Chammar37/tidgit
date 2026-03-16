@@ -2,7 +2,6 @@
 set -e
 
 REPO="Chammar37/tidgit"
-HOMEBREW_TAP="Chammar37/tidgit"
 MIN_PY_MAJOR=3
 MIN_PY_MINOR=11
 
@@ -38,18 +37,6 @@ main() {
     echo "  ─────────────────"
     echo ""
 
-    # macOS with Homebrew — use the tap
-    if command -v brew >/dev/null 2>&1; then
-        info "Homebrew detected — installing via brew ..."
-        brew install "${HOMEBREW_TAP}/tidgit" 2>/dev/null \
-            || brew upgrade "${HOMEBREW_TAP}/tidgit" 2>/dev/null \
-            || die "Homebrew install failed. Try: brew tap ${HOMEBREW_TAP} && brew install tidgit"
-        ok "Installed with Homebrew"
-        ok "tidgit $(tidgit --version 2>/dev/null || echo '') is ready — run: tidgit"
-        return
-    fi
-
-    # Otherwise, need Python
     PYTHON=$(find_python) || die "Python >= ${MIN_PY_MAJOR}.${MIN_PY_MINOR} is required. Install it first."
     PY_VER=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
     ok "Found Python $PY_VER ($PYTHON)"
