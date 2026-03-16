@@ -223,6 +223,8 @@ class TidGitApp:
         self.reset_commits: List[Tuple[str, str]] = []  # (hash, message)
         self.reset_confirm_hard = False
 
+        self.discard_confirm: Optional[str] = None  # path pending discard
+
     def set_status(self, text: str, error: bool = False) -> None:
         cleaned = re.sub(r"\s+", " ", text.replace("\r", "\n")).strip()
         self.status_text = cleaned
@@ -479,6 +481,30 @@ class TidGitApp:
             fallback_ok = self.run_git_action(["reset", "HEAD", "--", entry.path], f"Unstaged {entry.path}", "Unstage fallback failed")
             if not fallback_ok:
                 self.pending_focus = None
+
+    def discard_selected(self) -> None:
+        entry = self.current_entry()
+        if not entry:
+            self.set_status("Nothing selected.", error=True)
+            return
+        if not (entry.unstaged or entry.untracked):
+            self.set_status("No working-tree changes to discard.", error=True)
+            return
+        self.discard_confirm = entry.path
+
+    def perform_discard(self) -> None:
+        path = self.discard_confirm
+        self.discard_confirm = None
+        if not path:
+            return
+        entry = next((e for e in self.entries if e.path == path), None)
+        if not entry:
+            self.set_status("File no longer present.", error=True)
+            return
+        if entry.untracked:
+            self.run_git_action(["clean", "-f", "--", path], f"Discarded {path}", "Discard failed")
+        else:
+            self.run_git_action(["restore", "--", path], f"Discarded {path}", "Discard failed")
 
     def pull_rebase(self) -> None:
         self.run_git_action(["pull", "--rebase"], "✔ Pull completed", "Pull failed")
@@ -984,6 +1010,15 @@ class TidGitApp:
         self.stdscr.attroff(safe_color_pair(6))
 
     def draw_footer(self, w: int, h: int) -> None:
+        if self.discard_confirm:
+            color = safe_color_pair(3) | curses.A_BOLD
+            prompt = safe_truncate(
+                f" Discard changes to {self.discard_confirm}? ↵ confirm · Esc cancel", w - 1)
+            self.stdscr.attron(color)
+            self.stdscr.addstr(h - 1, 0, " " * max(0, w - 1))
+            self.stdscr.addstr(h - 1, 0, prompt)
+            self.stdscr.attroff(color)
+            return
         if self.status_is_error:
             color = safe_color_pair(3) | curses.A_BOLD
         else:
@@ -1385,7 +1420,7 @@ class TidGitApp:
         sep = " · "
         box1_inner = len(nav_part) + len(preview_part) + len(sep) + len(stage_parts)
 
-        box2 = f"{primary} · p pull · P push · x reset"
+        box2 = f"{primary} · p pull · P push · d discard · x reset"
         box2_inner = len(box2)
 
         rest = " r refresh · q quit"
@@ -1573,6 +1608,16 @@ class TidGitApp:
                 self.handle_reset_input(ch)
                 continue
 
+            if self.discard_confirm:
+                if is_enter_key(ch):
+                    self.perform_discard()
+                elif ch == "\x1b":
+                    self.discard_confirm = None
+                    self.set_status("Discard cancelled.")
+                else:
+                    self.discard_confirm = None
+                continue
+
             if ch in ("q", "Q"):
                 return 0
             if ch in ("j", curses.KEY_DOWN):
@@ -1615,6 +1660,9 @@ class TidGitApp:
                 continue
             if ch == "u":
                 self.unstage_selected()
+                continue
+            if ch == "d":
+                self.discard_selected()
                 continue
             if ch in ("c", "C"):
                 self.run_primary_action()
